@@ -39,6 +39,11 @@ anything requires explicit approval from the project owner (see CLAUDE.md).
 - **Decision**: pending. Probably replicate for byte parity of `nbmerge` output and record, since
   it only affects the builtin renderer (used when git is unavailable). Revisit in Phase 2.
 
+### F-006: `test_package.py` asserts on a misspelled module name (minor)
+- **What**: `nbdime/tests/test_package.py` line 12 asserts `'ndime.webapp' not in sys.modules`
+  (missing `b`), so the check that importing nbdime does not import the web app can never fail.
+- **Decision**: none needed for the port. Upstream report candidate (trivial); not reported.
+
 ## Nondeterminism in upstream
 
 ### F-003: random cell ids on read (nbformat >= 4.5)

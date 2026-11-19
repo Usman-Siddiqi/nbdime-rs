@@ -6,41 +6,11 @@ use crate::difflib::{self, SequenceMatcher};
 use crate::py::py_len;
 use crate::value::{Map, Value};
 
-use super::config::{join_path, DiffConfig, Differ, Predicate};
+use super::config::{join_path, DiffConfig};
 use super::sequence::diff_sequence_bruteforce;
 use super::snakes::{compute_diff_from_snakes, compute_snakes_multilevel, Compare};
-use super::strings::{diff_strings_by_char, diff_strings_linewise};
-use super::DiffError;
-
-impl Predicate {
-    pub fn apply(self, a: &Value, b: &Value) -> bool {
-        match self {
-            Predicate::Eq => a.py_eq(b),
-            Predicate::StringsApproximate => match (a, b) {
-                (Value::Str(x), Value::Str(y)) => compare_strings_approximate(x, y, 0.7, None),
-                _ => false,
-            },
-        }
-    }
-}
-
-impl Differ {
-    pub fn apply(
-        self,
-        a: &Value,
-        b: &Value,
-        path: &str,
-        config: &DiffConfig,
-    ) -> Result<Diff, DiffError> {
-        match self {
-            Differ::Generic => diff_with_config(a, b, path, config),
-            Differ::StringsByChar => match (a, b) {
-                (Value::Str(a), Value::Str(b)) => Ok(diff_strings_by_char(a, b)),
-                _ => Err(DiffError::NotStrings),
-            },
-        }
-    }
-}
+use super::strings::diff_strings_linewise;
+use super::{DiffError, MAX_DIFF_DEPTH};
 
 /// Whether two strings are similar enough to be considered the same item.
 ///
@@ -80,7 +50,23 @@ pub fn diff(a: &Value, b: &Value) -> Result<Diff, DiffError> {
 }
 
 /// Diff of two lists, dicts or strings of the same kind found at `path`.
+///
+/// Values nested deeper than [`MAX_DIFF_DEPTH`] are an error.
 pub fn diff_with_config(
+    a: &Value,
+    b: &Value,
+    path: &str,
+    config: &DiffConfig,
+) -> Result<Diff, DiffError> {
+    if a.nesting_exceeds(MAX_DIFF_DEPTH) || b.nesting_exceeds(MAX_DIFF_DEPTH) {
+        return Err(DiffError::TooDeep(MAX_DIFF_DEPTH));
+    }
+    diff_values(a, b, path, config)
+}
+
+/// [`diff_with_config`] for values already known to be within the depth limit, which is the case
+/// for everything the recursion reaches.
+pub(super) fn diff_values(
     a: &Value,
     b: &Value,
     path: &str,
@@ -99,7 +85,7 @@ pub fn diff_with_config(
 }
 
 /// Diff of two lists: aligned items are recursed into, the rest become range operations.
-pub fn diff_lists(
+pub(super) fn diff_lists(
     a: &[Value],
     b: &[Value],
     path: &str,
@@ -148,7 +134,7 @@ pub fn diff_lists(
 }
 
 /// Diff of two lists aligned with several predicates, loosest first.
-pub fn diff_sequence_multilevel(
+fn diff_sequence_multilevel(
     a: &[Value],
     b: &[Value],
     path: &str,
@@ -165,7 +151,7 @@ pub fn diff_sequence_multilevel(
 }
 
 /// Diff of two dicts: removed keys, changed values and added keys, sorted by key.
-pub fn diff_dicts(a: &Map, b: &Map, path: &str, config: &DiffConfig) -> Result<Diff, DiffError> {
+fn diff_dicts(a: &Map, b: &Map, path: &str, config: &DiffConfig) -> Result<Diff, DiffError> {
     let mut di = MappingDiffBuilder::new();
 
     // Keys are processed in sorted order for a deterministic diff (byte order of UTF-8 equals
@@ -215,6 +201,7 @@ mod tests {
     use super::*;
     use crate::diff_format::diff_to_value;
     use crate::json::{dumps, parse, DumpOptions};
+    use crate::value::Value;
 
     fn diff_json(a: &str, b: &str) -> String {
         let d = diff(&parse(a).unwrap(), &parse(b).unwrap()).unwrap();
@@ -290,6 +277,61 @@ mod tests {
         );
         assert_eq!(diff(&list, &dict), Err(DiffError::UnsupportedTypes));
         assert_eq!(diff(&int, &int), Err(DiffError::UnsupportedTypes));
+    }
+
+    fn nested(kind: &str, levels: usize, leaf: &str) -> Value {
+        let (open, close) = if kind == "list" {
+            ("[", "]")
+        } else {
+            ("{\"k\":", "}")
+        };
+        parse(&format!(
+            "{}{leaf}{}",
+            open.repeat(levels),
+            close.repeat(levels)
+        ))
+        .unwrap()
+    }
+
+    /// Runs `f` on a thread with the default test stack size of 2 MB.
+    fn on_small_stack(f: impl FnOnce() + Send + 'static) {
+        std::thread::Builder::new()
+            .stack_size(2 << 20)
+            .spawn(f)
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    #[test]
+    fn diffs_nesting_up_to_the_limit_on_a_small_stack() {
+        on_small_stack(|| {
+            // Dicts recurse whether or not their values are equal, lists only into aligned
+            // (equal) items; the innermost container holds the only difference or none.
+            let a = nested("dict", MAX_DIFF_DEPTH, "1");
+            let b = nested("dict", MAX_DIFF_DEPTH, "2");
+            assert!(a.nesting_exceeds(MAX_DIFF_DEPTH - 1) && !a.nesting_exceeds(MAX_DIFF_DEPTH));
+            assert!(diff(&a, &b).is_ok_and(|d| d.len() == 1));
+
+            let l = nested("list", MAX_DIFF_DEPTH, "1");
+            assert!(!l.nesting_exceeds(MAX_DIFF_DEPTH));
+            assert!(diff(&l, &l).is_ok_and(|d| d.is_empty()));
+        });
+    }
+
+    #[test]
+    fn nesting_past_the_limit_is_an_error() {
+        on_small_stack(|| {
+            for kind in ["dict", "list"] {
+                let ok = nested(kind, MAX_DIFF_DEPTH, "1");
+                let deep = nested(kind, MAX_DIFF_DEPTH + 1, "1");
+                let too_deep = |r: Result<Diff, DiffError>| {
+                    r.err() == Some(DiffError::TooDeep(MAX_DIFF_DEPTH))
+                };
+                assert!(too_deep(diff(&deep, &ok)));
+                assert!(too_deep(diff(&ok, &deep)));
+            }
+        });
     }
 
     #[test]

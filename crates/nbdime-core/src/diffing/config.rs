@@ -3,7 +3,12 @@
 
 use std::collections::HashMap;
 
+use crate::diff_format::Diff;
 use crate::value::Value;
+
+use super::generic::{compare_strings_approximate, diff_values};
+use super::strings::diff_strings_by_char;
+use super::DiffError;
 
 /// Decides whether two sequence items are "the same" for alignment.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -15,6 +20,18 @@ pub enum Predicate {
     StringsApproximate,
 }
 
+impl Predicate {
+    pub(super) fn apply(self, a: &Value, b: &Value) -> bool {
+        match self {
+            Predicate::Eq => a.py_eq(b),
+            Predicate::StringsApproximate => match (a, b) {
+                (Value::Str(x), Value::Str(y)) => compare_strings_approximate(x, y, 0.7, None),
+                _ => false,
+            },
+        }
+    }
+}
+
 /// Computes the diff of two items found at a path.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Differ {
@@ -22,6 +39,24 @@ pub enum Differ {
     Generic,
     /// `diff_strings_by_char`.
     StringsByChar,
+}
+
+impl Differ {
+    pub(super) fn apply(
+        self,
+        a: &Value,
+        b: &Value,
+        path: &str,
+        config: &DiffConfig,
+    ) -> Result<Diff, DiffError> {
+        match self {
+            Differ::Generic => diff_values(a, b, path, config),
+            Differ::StringsByChar => match (a, b) {
+                (Value::Str(a), Value::Str(b)) => Ok(diff_strings_by_char(a, b)),
+                _ => Err(DiffError::NotStrings),
+            },
+        }
+    }
 }
 
 /// Predicates, differs and atomic-path overrides keyed by path (`/cells/*/source`).

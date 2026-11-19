@@ -9,14 +9,18 @@ pub mod strings;
 use crate::diff_format::DiffFormatError;
 
 pub use config::{DiffConfig, Differ, Predicate};
-pub use generic::{
-    compare_strings_approximate, diff, diff_dicts, diff_lists, diff_sequence_multilevel,
-    diff_with_config,
-};
+pub use generic::{compare_strings_approximate, diff, diff_with_config};
 pub use strings::{diff_strings_by_char, diff_strings_linewise};
+
+/// Deepest nesting of lists and dicts that [`diff`] accepts. The recursion over nested values
+/// uses native stack, so it is bounded rather than left to the input (Python's own recursion limit
+/// stops upstream's diff at a similar depth).
+pub const MAX_DIFF_DEPTH: usize = 500;
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum DiffError {
+    #[error("Cannot diff values nested more than {0} levels deep.")]
+    TooDeep(usize),
     #[error("Can currently only diff list, dict, or str objects.")]
     UnsupportedTypes,
     #[error("Arguments need to be string types.")]

@@ -181,6 +181,23 @@ impl Value {
         }
     }
 
+    /// Whether lists and objects are nested more than `limit` levels deep (scalars have depth 0,
+    /// an empty container depth 1). Iterative, and stops at the first value past the limit.
+    pub fn nesting_exceeds(&self, limit: usize) -> bool {
+        let mut pending = vec![(self, 1)];
+        while let Some((value, depth)) = pending.pop() {
+            if depth > limit && matches!(value, Value::List(_) | Value::Object(_)) {
+                return true;
+            }
+            match value {
+                Value::List(items) => pending.extend(items.iter().map(|v| (v, depth + 1))),
+                Value::Object(map) => pending.extend(map.values().map(|v| (v, depth + 1))),
+                _ => {}
+            }
+        }
+        false
+    }
+
     pub fn as_str(&self) -> Option<&str> {
         match self {
             Value::Str(s) => Some(s),
@@ -368,6 +385,21 @@ mod tests {
         let mut c = a.clone();
         c.insert("z".into(), Value::Null);
         assert!(!Value::Object(a).py_eq(&Value::Object(c)));
+    }
+
+    #[test]
+    fn nesting_depth_limit() {
+        let nested = |levels: usize| (0..levels).fold(int(1), |v, _| Value::List(vec![v]));
+        assert!(!int(1).nesting_exceeds(0));
+        assert!(!Value::List(vec![]).nesting_exceeds(1));
+        assert!(Value::List(vec![]).nesting_exceeds(0));
+        assert!(!nested(5).nesting_exceeds(5));
+        assert!(nested(6).nesting_exceeds(5));
+        let mut wide = Map::new();
+        wide.insert("a".into(), int(1));
+        wide.insert("b".into(), nested(5));
+        assert!(Value::Object(wide.clone()).nesting_exceeds(5));
+        assert!(!Value::Object(wide).nesting_exceeds(6));
     }
 
     #[test]

@@ -11,16 +11,16 @@ the orchestrator. Parity is measured against nbdime 4.0.4.
 - Reproduce and explain the scaling problem: `docs/upstream-performance.md`.
 - `docs/porting-guide.md`, `docs/design.md`, `docs/findings.md`, `CLAUDE.md`.
 
-## Phase 1: foundation and pilot 🔄
+## Phase 1: foundation and pilot ✅ (pilot merged; awaiting go-ahead for Phase 2)
 | Unit | Owner | Status | Acceptance |
 |---|---|---|---|
-| F1 workspace, CI, license | orchestrator | 🔄 | `cargo build`, CI green |
-| F2 `Value`, Python equality, truthiness | orchestrator | 🔄 | unit tests incl. int/float/bool cross-equality |
-| F3 JSON parse/dump with Python semantics | orchestrator | 🔄 | parity: 10k random docs, float repr sample of 100k, byte-identical to `json.dumps` |
-| F4 diff format types + JSON | orchestrator | 🔄 | round-trips upstream test diffs byte for byte |
-| F5 parity harness + dev batch tool | orchestrator | 🔄 | runs, counts cases, rejects skips |
-| F6 benchmark harness | orchestrator | 🔄 | upstream timings reproducible from `bench/run.py` |
-| **P1 pilot: generic diff engine** | implementer loop | ⏳ | see below |
+| F1 workspace, CI, license | orchestrator | ✅ | `cargo build`, CI green |
+| F2 `Value`, Python equality, truthiness | orchestrator | ✅ | unit tests incl. int/float/bool cross-equality |
+| F3 JSON parse/dump with Python semantics | orchestrator | ✅ | parity: 10k random docs, float repr sample of 100k, byte-identical to `json.dumps` |
+| F4 diff format types + JSON | orchestrator | ✅ | round-trips upstream test diffs byte for byte |
+| F5 parity harness + dev batch tool | orchestrator | ✅ | runs, counts cases, rejects skips |
+| F6 benchmark harness | orchestrator | ✅ | upstream timings reproducible from `bench/run.py` |
+| **P1 pilot: generic diff engine** | implementer loop | ✅ | see below |
 
 **P1 pilot scope**: `difflib.SequenceMatcher` (matching blocks, opcodes, ratio, quick_ratio,
 real_quick_ratio), `diff_strings_by_char`, `diff_strings_linewise`, `compare_strings_approximate`,
@@ -32,9 +32,9 @@ all string fields of the upstream test notebooks, byte-identical JSON.
 | Unit | Depends on | Scope |
 |---|---|---|
 | U02 nbformat read/write | F3 | rejoin/split lines, strip transient, id policy (F-003), v3→v4 upconversion, `nbformat.write` formatting |
-| U03 notebook predicates | P1 | all `compare_*` predicates, precomputed per-cell data, exact results |
+| U03 notebook predicates | P1 | all `compare_*` predicates, precomputed per-cell data, exact results; decide text-as-list operands (F-011) |
 | U04 `diff_notebooks` + ignore config | P1, U03 | differs, `diff_single_outputs`, mime bundles, attachments, targets/ignores |
-| U05 patch + diff utils | F4 | `patch`, `flatten_list_of_string_diff`, `to_json_patch` (if needed) |
+| U05 patch + diff utils | F4 | `patch`, `flatten_list_of_string_diff`, `to_json_patch` (if needed); `diff_from_value` key types (bool/negative/big int keys accepted by Python) |
 | U06 diff pretty-printer | U04 | `pretty_print_notebook_diff` byte parity incl. git `--color-words` rendering |
 | U07 `nbdiff` CLI | U04, U06 | flags, `--out`, gitref mode, exit codes |
 | U08 `nbshow` | U02 | flags and output |
@@ -63,8 +63,8 @@ stop and ask.
 ## Parity status
 | Area | Status |
 |---|---|
-| JSON I/O | not measured yet |
-| Generic diff | not started |
+| JSON I/O | byte-identical to Python `json` on all suites (100k floats, 5k docs, edge cases); deviations F-005 (lone surrogates rejected) |
+| Generic diff | identical to nbdime 4.0.4 on ~45k cases per run (also at 4x scale, seed 17); deviations F-001 (no spurious error), F-009 (depth limit), F-011 (approximate predicate scope) |
 | Notebook diff | not started |
 | Patch | not started |
 | Merge | not started |

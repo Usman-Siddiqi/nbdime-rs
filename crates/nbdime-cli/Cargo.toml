@@ -1,0 +1,20 @@
+[package]
+name = "nbdime-cli"
+description = "Command line tools for nbdime-rs: nbdiff, nbshow, nbpatch, nbmerge and git drivers"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "nbdime-rs-dev"
+path = "src/bin/dev.rs"
+
+[dependencies]
+nbdime-core.workspace = true
+anyhow.workspace = true
+
+[lints]
+workspace = true

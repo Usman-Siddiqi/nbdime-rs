@@ -57,6 +57,20 @@ anything requires explicit approval from the project owner (see CLAUDE.md).
 - **Decision**: replicated, because the parity suite compares the snake list. Harmless; not worth
   reporting upstream on its own.
 
+### F-014: `diff_notebooks` reorders the caller's output dicts
+- **What**: `diff_single_outputs` does `a.pop('data')` ... `a.data = tmp_data` on the caller's
+  outputs, which moves `data` to the end of their key order. It runs during cell alignment
+  (`compare_outputs_approximate` at the moderate level), not only on the final pairs, so
+  outputs that end up as values in the diff (an `addrange` of cells) show `data` last, and the
+  caller's notebooks are modified too. Visible in `nbdiff --out` JSON. Reproduction:
+  `docs/process/u04-notebook-diff.md` and `test_u04_f014_fix_is_neutral`.
+- **Impact**: cosmetic (JSON key order), but a diff function should not mutate its inputs, and
+  which outputs are affected depends on which predicate pairs were evaluated, so a faster
+  aligner cannot reproduce it without evaluating every pair upstream evaluates.
+- **Decision**: deviation. nbdime-rs never mutates inputs. The oracle wraps
+  `diff_single_outputs` with shallow copies; the neutrality test shows the results are equal
+  with keys sorted. Candidate for an upstream report (ask the owner first).
+
 ## Nondeterminism in upstream
 
 ### F-003: random cell ids on read (nbformat >= 4.5)
@@ -64,9 +78,13 @@ anything requires explicit approval from the project owner (see CLAUDE.md).
   random ids for notebooks declaring `nbformat_minor >= 5`.
 - **Impact**: upstream's diff of such a notebook against anything contains random ids; two runs
   differ.
-- **Decision (approved 2026-11-19)**: nbdime-rs fills missing/duplicate ids **deterministically** (stable
-  hash of cell position and content, same 8-hex-char shape). Parity cases with such inputs compare
-  modulo the generated ids (the harness substitutes ids it can map one-to-one).
+- **Decision (approved 2026-11-19)**: nbdime-rs fills missing/duplicate ids **deterministically**,
+  same 8-hex-char shape. Refined for U02: the hash covers the cell's content only, not its
+  position (FNV-1a 64 of the canonical cell JSON, suffixed `:1`, `:2`, ... on collision; exact
+  rule in `docs/process/u02-nbformat.md`), so an unchanged cell keeps its id when cells are
+  inserted before it and a diff of two such notebooks shows no spurious id changes. Parity cases
+  with repaired ids compare modulo those ids, and check that they are 8 hex chars, unique and
+  stable.
 
 ## Deliberate deviations
 
@@ -119,6 +137,23 @@ anything requires explicit approval from the project owner (see CLAUDE.md).
 - **Review trail**: raised as major by the P1 sign-off re-review; downgraded by the orchestrator
   because no nbdime configuration reaches it.
 
+### F-012: nbformat v1-v3 input is rejected
+- Upstream upconverts v1-v3 notebooks with `nbformat.convert`. nbdime-rs supports v4 only and
+  returns an error that names the version and suggests `jupyter nbconvert --to notebook` (which
+  upgrades). v3 was superseded in 2015; the converters are large and rarely exercised. A missing
+  `nbformat` key (upstream: v1) and non-integer versions (`4.0`; upstream: `AssertionError`) are
+  errors too. Resolves Q-003. Can be revisited in Phase 4 if users ask.
+
+### F-013: no schema validation messages
+- `nbformat.read` validates against the JSON schema and logs "Notebook JSON is invalid" to
+  stderr, then carries on. nbdime-rs does not validate against the schema (only the id repair
+  part of validation has an effect on the data), so it prints nothing. stdout is unaffected.
+
+### F-015: diff keys in patch input
+- Upstream's `patch_list` accepts `true`/`false` as list keys (Python bools are ints) and
+  negative integers (slicing from the end). No differ produces them; nbdime-rs rejects them with
+  an error rather than reproducing slicing-from-the-end behavior for hand-edited diffs.
+
 ## Open questions
 
 - **Q-001** (decided): deterministic ids, see F-003.
@@ -126,5 +161,4 @@ anything requires explicit approval from the project owner (see CLAUDE.md).
   with a traceback). Decision (approved 2026-11-19): accept and ignore a leading BOM, since editors
   on Windows sometimes add one (deliberate deviation). The JSON layer itself rejects it, like `json.loads`; the notebook reader
   (U02) decides.
-- **Q-003**: nbformat v3 and older inputs: port `nbformat.convert` upconversion, or shell out /
-  reject with a clear error? Proposed: port v3→v4 conversion in Phase 2 (small, well specified).
+- **Q-003** (decided 2026-11-19): v4 only, see F-012.

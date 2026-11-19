@@ -6,6 +6,7 @@
 
 use std::cmp::Ordering;
 use std::fmt;
+use std::hash::{Hash, Hasher};
 
 use indexmap::IndexMap;
 
@@ -141,29 +142,61 @@ impl Value {
         }
     }
 
-    /// Python `self == other` for values parsed from JSON.
+    /// Python `self == other` for two values compared directly, as `==` does.
     ///
     /// Numbers compare by mathematical value across `bool`, `int` and `float`; containers compare
-    /// element-wise, dicts ignoring key order. `NaN` never equals anything: two values parsed
-    /// independently are never the same Python object, so the identity shortcut of container
-    /// comparison never applies.
+    /// element-wise, dicts ignoring key order. A bare `NaN` never equals anything, but inside
+    /// containers the comparison short-circuits on object identity, and CPython's `json` returns
+    /// one shared `NaN` object: `[NaN] == [NaN]` and `{"x": NaN} == {"x": NaN}` hold, at every
+    /// nesting level.
     pub fn py_eq(&self, other: &Value) -> bool {
+        self.eq_with(other, false)
+    }
+
+    /// Python equality of two items of a container: `PyObject_RichCompareBool`, which treats a
+    /// `NaN` as equal to itself.
+    pub fn py_eq_item(&self, other: &Value) -> bool {
+        self.eq_with(other, true)
+    }
+
+    fn eq_with(&self, other: &Value, nan_is_identical: bool) -> bool {
         use Value::*;
         match (self, other) {
             (Null, Null) => true,
             (Str(a), Str(b)) => a == b,
-            (List(a), List(b)) => a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.py_eq(y)),
+            (List(a), List(b)) => {
+                a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.py_eq_item(y))
+            }
             (Object(a), Object(b)) => {
-                a.len() == b.len() && a.iter().all(|(k, v)| b.get(k).is_some_and(|w| v.py_eq(w)))
+                a.len() == b.len()
+                    && a.iter()
+                        .all(|(k, v)| b.get(k).is_some_and(|w| v.py_eq_item(w)))
             }
             (Bool(a), Bool(b)) => a == b,
-            (Float(a), Float(b)) => a == b,
+            (Float(a), Float(b)) => a == b || (nan_is_identical && a.is_nan() && b.is_nan()),
             (Int(a), Int(b)) => a == b,
             (Int(i), Float(f)) | (Float(f), Int(i)) => i.eq_float(*f),
             (Bool(b), Int(i)) | (Int(i), Bool(b)) => *i == crate::value::Int::Small(i64::from(*b)),
             (Bool(b), Float(f)) | (Float(f), Bool(b)) => *f == f64::from(u8::from(*b)),
             _ => false,
         }
+    }
+
+    /// Whether lists and objects are nested more than `limit` levels deep (scalars have depth 0,
+    /// an empty container depth 1). Iterative, and stops at the first value past the limit.
+    pub fn nesting_exceeds(&self, limit: usize) -> bool {
+        let mut pending = vec![(self, 1)];
+        while let Some((value, depth)) = pending.pop() {
+            if depth > limit && matches!(value, Value::List(_) | Value::Object(_)) {
+                return true;
+            }
+            match value {
+                Value::List(items) => pending.extend(items.iter().map(|v| (v, depth + 1))),
+                Value::Object(map) => pending.extend(map.values().map(|v| (v, depth + 1))),
+                _ => {}
+            }
+        }
+        false
     }
 
     pub fn as_str(&self) -> Option<&str> {
@@ -209,6 +242,62 @@ impl Value {
 
     pub fn is_object(&self) -> bool {
         matches!(self, Value::Object(_))
+    }
+}
+
+/// A value that Python can hash (`None`, numbers and strings), usable as a dictionary key.
+///
+/// Equality is that of container items and the hash agrees with it, so `1`, `1.0` and `True`
+/// are the same key and `NaN` equals itself.
+#[derive(Clone, Copy, Debug)]
+pub struct Hashable<'a>(&'a Value);
+
+impl Value {
+    /// `None` for lists and objects, which Python cannot hash.
+    pub fn as_hashable(&self) -> Option<Hashable<'_>> {
+        match self {
+            Value::List(_) | Value::Object(_) => None,
+            _ => Some(Hashable(self)),
+        }
+    }
+}
+
+impl PartialEq for Hashable<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.py_eq_item(other.0)
+    }
+}
+
+impl Eq for Hashable<'_> {}
+
+impl Hash for Hashable<'_> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        /// An integer-valued number: equal numbers must hash alike across bool, int and float.
+        enum Number<'s> {
+            Small(i64),
+            Big(std::borrow::Cow<'s, str>),
+        }
+        let number = match self.0 {
+            Value::Null => return 0u8.hash(state),
+            Value::Str(s) => return (1u8, s).hash(state),
+            Value::Bool(b) => Number::Small(i64::from(*b)),
+            Value::Int(Int::Small(v)) => Number::Small(*v),
+            Value::Int(Int::Big(digits)) => Number::Big(digits.into()),
+            Value::Float(f) if f.is_nan() => return 2u8.hash(state),
+            Value::Float(f) if f.is_finite() && f.fract() == 0.0 => {
+                if (i64::MIN as f64..-(i64::MIN as f64)).contains(f) {
+                    Number::Small(*f as i64)
+                } else {
+                    Number::Big(format!("{f:.0}").into())
+                }
+            }
+            Value::Float(f) => return (3u8, f.to_bits()).hash(state),
+            Value::List(_) | Value::Object(_) => unreachable!("unhashable values are excluded"),
+        };
+        match number {
+            Number::Small(v) => (4u8, v).hash(state),
+            Number::Big(digits) => (5u8, digits).hash(state),
+        }
     }
 }
 
@@ -309,9 +398,25 @@ mod tests {
         assert!(Value::Bool(true).py_eq(&Value::Float(1.0)));
         assert!(Value::Bool(false).py_eq(&Value::Float(-0.0)));
         assert!(!int(1).py_eq(&Value::Float(1.5)));
-        assert!(!Value::Float(f64::NAN).py_eq(&Value::Float(f64::NAN)));
         assert!(!int(1).py_eq(&Value::from("1")));
         assert!(!Value::Null.py_eq(&Value::Bool(false)));
+    }
+
+    #[test]
+    fn nan_is_unequal_directly_and_identical_inside_containers() {
+        let nan = || Value::Float(f64::NAN);
+        assert!(!nan().py_eq(&nan()));
+        assert!(nan().py_eq_item(&nan()));
+        assert!(!nan().py_eq_item(&Value::Float(1.0)));
+
+        let list = |v: Value| Value::List(vec![v]);
+        assert!(list(nan()).py_eq(&list(nan())));
+        assert!(list(list(nan())).py_eq(&list(list(nan()))));
+        assert!(!list(nan()).py_eq(&list(Value::Float(0.0))));
+
+        let object = |v: Value| Value::Object(Map::from_iter([("z".to_owned(), v)]));
+        assert!(object(nan()).py_eq(&object(nan())));
+        assert!(list(object(list(nan()))).py_eq(&list(object(list(nan())))));
     }
 
     #[test]
@@ -337,6 +442,47 @@ mod tests {
         let mut c = a.clone();
         c.insert("z".into(), Value::Null);
         assert!(!Value::Object(a).py_eq(&Value::Object(c)));
+    }
+
+    #[test]
+    fn nesting_depth_limit() {
+        let nested = |levels: usize| (0..levels).fold(int(1), |v, _| Value::List(vec![v]));
+        assert!(!int(1).nesting_exceeds(0));
+        assert!(!Value::List(vec![]).nesting_exceeds(1));
+        assert!(Value::List(vec![]).nesting_exceeds(0));
+        assert!(!nested(5).nesting_exceeds(5));
+        assert!(nested(6).nesting_exceeds(5));
+        let mut wide = Map::new();
+        wide.insert("a".into(), int(1));
+        wide.insert("b".into(), nested(5));
+        assert!(Value::Object(wide.clone()).nesting_exceeds(5));
+        assert!(!Value::Object(wide).nesting_exceeds(6));
+    }
+
+    #[test]
+    fn hashable_values_hash_like_python() {
+        use std::collections::HashSet;
+        let values = [
+            int(1),
+            Value::Float(1.0),
+            Value::Bool(true),
+            Value::Float(f64::NAN),
+            Value::Float(f64::NAN),
+            Value::Float(1e20),
+            Value::Int(Int::from_literal("100000000000000000000")),
+            Value::Float(0.0),
+            Value::Float(-0.0),
+            Value::Bool(false),
+            int(0),
+            Value::Float(0.5),
+            Value::from("1"),
+            Value::Null,
+        ];
+        let keys: HashSet<_> = values.iter().filter_map(Value::as_hashable).collect();
+        // {1, NaN, 1e20, 0, 0.5, "1", None}
+        assert_eq!(keys.len(), 7);
+        assert!(Value::List(vec![]).as_hashable().is_none());
+        assert!(Value::Object(Map::new()).as_hashable().is_none());
     }
 
     #[test]

@@ -186,10 +186,15 @@ def test_pilot_generic_diff_random_json(engine):
 
 
 def test_pilot_generic_diff_f001_cases(engine):
-    """Cases where upstream raises F-001; we produce what upstream intends (the replace)."""
+    """Cases where upstream raises F-001; we produce what upstream intends.
+
+    In generic diffs aligned items compare equal, so the intended result for the type-changed
+    (but equal, e.g. 1 vs True) value is no entry at all.
+    """
     cases = [
-        {"a": {"x": [[1]], "y": [{"k": 1}]}, "b": {"x": [[2]], "y": [{"k": "s"}]}},
-        {"a": [[0], {"a": 1}], "b": [[1], {"a": None}]},
+        {"a": [[1], {"k": 1}], "b": [[1], {"k": True}]},
+        {"a": {"x": [[1], {"k": 1}]}, "b": {"x": [[1], {"k": 1.0}]}},
+        {"a": [[1], {"k": 0, "j": [2]}], "b": [[1], {"k": False, "j": [2.0]}]},
     ]
     for c in cases:
         try:
@@ -197,7 +202,7 @@ def test_pilot_generic_diff_f001_cases(engine):
             raise AssertionError("expected upstream to raise F-001 for %r" % (c,))
         except RuntimeError as e:
             assert "pointing to dict entry" in str(e)
-    check_parity(engine, "diff", cases, o_diff, min_cases=2)
+    check_parity(engine, "diff", cases, o_diff, min_cases=3)
 
 
 def test_pilot_generic_diff_upstream_notebooks(engine):
@@ -209,7 +214,10 @@ def test_pilot_generic_diff_upstream_notebooks(engine):
     rng = rng_for("pilot-generic-nb")
     for _, nb in upstream_test_notebooks():
         for _ in range(scaled(20)):
-            cases.append({"a": joined_notebook(nb), "b": mutate_json(rng, joined_notebook(nb))})
+            a = joined_notebook(nb)
+            b = mutate_json(rng, a)
+            if isinstance(b, dict):  # a scalar root is just an error case on both sides
+                cases.append({"a": a, "b": b})
     check_parity(engine, "diff", cases, o_diff, min_cases=1000)
 
 

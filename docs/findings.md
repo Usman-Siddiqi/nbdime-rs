@@ -39,7 +39,12 @@ anything requires explicit approval from the project owner (see CLAUDE.md).
 - **Decision**: pending. Probably replicate for byte parity of `nbmerge` output and record, since
   it only affects the builtin renderer (used when git is unavailable). Revisit in Phase 2.
 
-### F-006: `bruteforce_compute_snakes` never merges consecutive pairs
+### F-006: `test_package.py` asserts on a misspelled module name (minor)
+- **What**: `nbdime/tests/test_package.py` line 12 asserts `'ndime.webapp' not in sys.modules`
+  (missing `b`), so the check that importing nbdime does not import the web app can never fail.
+- **Decision**: none needed for the port. Upstream report candidate (trivial); not reported.
+
+### F-007: `bruteforce_compute_snakes` never merges consecutive pairs
 - **What**: while building snakes from the LCS index pairs, upstream extends the last snake when
   `snakes[-1][0] == i and snakes[-1][1] == j`, comparing the snake's *start* with the new pair
   instead of its end. Only a pair at (0, 0) of the rectangle ever extends a snake; every other

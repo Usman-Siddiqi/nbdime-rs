@@ -4,6 +4,9 @@ from pathlib import Path
 
 import pytest
 
+# The reference venv may carry unrelated pytest plugins; parity needs none of them.
+pytest_plugins = []
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from harness import ROOT, Engine  # noqa: E402

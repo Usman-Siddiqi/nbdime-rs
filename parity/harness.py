@@ -84,16 +84,22 @@ class Engine:
             self.proc.wait(timeout=30)
 
 
-def check_parity(engine, fn, cases, oracle, min_cases, show=5, compare=None):
+def check_parity(engine, fn, cases, oracle, min_cases, show=5, compare=None, max_error_fraction=0.05):
     """Run `fn` on every case in the engine and compare with `oracle(**case)`.
 
     `cases` is a list of argument dicts. The oracle may raise; the engine must then also report
-    an error (error messages are not compared). Fails with a report of the first mismatches.
+    an error (error messages are not compared, but "unknown function" never counts). At most
+    `max_error_fraction` of the cases may be such agreed errors, so a suite cannot pass by
+    erroring. Fails with a report of the first mismatches.
     """
     assert len(cases) >= min_cases, "only %d cases generated, need %d" % (len(cases), min_cases)
     results = engine.call_many(fn, cases)
     failures = []
+    agreed_errors = 0
     for case, (ok, got) in zip(cases, results):
+        if not ok and got.startswith("unknown function"):
+            failures.append((case, "(any result)", "ERROR " + got))
+            continue
         try:
             expected = oracle(**case)
             oracle_ok = True
@@ -105,6 +111,7 @@ def check_parity(engine, fn, cases, oracle, min_cases, show=5, compare=None):
                              got if ok else "ERROR " + got))
             continue
         if not oracle_ok:
+            agreed_errors += 1
             continue
         same = compare(expected, got) if compare else canon(expected) == canon(got)
         if not same:
@@ -116,6 +123,8 @@ def check_parity(engine, fn, cases, oracle, min_cases, show=5, compare=None):
             lines.append("  expected: " + _short(expected))
             lines.append("  got:      " + _short(got))
         raise AssertionError("\n".join(lines))
+    assert agreed_errors <= max_error_fraction * len(cases), (
+        "%d of %d cases are errors on both sides; the suite is not testing results" % (agreed_errors, len(cases)))
     return len(cases)
 
 
@@ -142,3 +151,30 @@ def notebook_families(notebooks):
     for name, nb in notebooks:
         fam.setdefault(name.split("--")[0], []).append((name, nb))
     return fam
+
+
+class _NonRecordingDefaultDict(dict):
+    """A defaultdict whose lookups do not insert keys (see findings F-001)."""
+
+    def __init__(self, factory, *args):
+        super().__init__(*args)
+        self.default_factory = factory
+
+    def __missing__(self, key):
+        return self.default_factory()
+
+
+def generic_diff_fixed(a, b):
+    """nbdime.diff with the F-001 fix: predicate lookups do not register paths.
+
+    Identical to upstream whenever upstream does not raise the spurious "Found predicate(s) for
+    path ... pointing to dict entry" error; where it does, this gives the result upstream
+    intends.
+    """
+    import operator
+    from nbdime.diffing.config import DiffConfig
+    from nbdime.diffing.generic import default_differs, diff
+
+    config = DiffConfig(predicates=_NonRecordingDefaultDict(lambda: (operator.__eq__,)),
+                        differs=default_differs())
+    return diff(a, b, config=config)

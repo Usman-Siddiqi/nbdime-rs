@@ -1,0 +1,3 @@
+# Parity suites that must pass on the integration branch (used by CI and scripts/gate.sh).
+# A unit's suite is added here when the unit merges.
+test_json_io.py

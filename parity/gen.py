@@ -161,7 +161,16 @@ def mutate_json(rng, v, depth=0):
 
 
 def json_pair(rng):
-    a = random_json(rng)
-    if rng.random() < 0.5:
-        a = {"root": a, "list": [random_json(rng, 2) for _ in range(rng.randint(0, 5))]}
-    return a, mutate_json(rng, a)
+    """Two containers of the same type (generic diff only accepts list/dict/str pairs)."""
+    r = rng.random()
+    if r < 0.4:
+        a = {"root": random_json(rng), "list": [random_json(rng, 2) for _ in range(rng.randint(0, 5))]}
+    elif r < 0.7:
+        a = [random_json(rng, 1) for _ in range(rng.randint(0, 6))]
+    else:
+        a = {k: random_json(rng, 1) for k in rng.sample(["a", "b", "c", "x", "\u00e9"], rng.randint(0, 5))}
+    for _ in range(10):
+        b = mutate_json(rng, a)
+        if type(b) is type(a):
+            return a, b
+    return a, a

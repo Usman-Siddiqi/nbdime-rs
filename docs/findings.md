@@ -19,13 +19,15 @@ anything requires explicit approval from the project owner (see CLAUDE.md).
   diff_notebooks({... "x": [1] ...}, {... "x": [2] ...})
   diff_notebooks(a, b)                       # RuntimeError
   ```
-  The same can happen within a single diff when a starred path is a list in one cell and a dict
-  in another.
+  The same happens **within a single call**, also for the generic `nbdime.diff`: whenever the
+  same starred path holds a list in one place and a dict with a type-changed value in another.
+  In a seeded random corpus of 6,000 JSON pairs, 617 (10%) raise this error.
 - **Impact**: long-running processes (Jupyter server extension, library users) can fail
   nondeterministically depending on history.
-- **Decision**: do not replicate. nbdime-rs never raises here and produces the `replace` that
-  upstream produces on a fresh process. Parity cases are run on a fresh oracle state per case
-  family; cases that trigger the raise are recorded as a known deviation.
+- **Decision**: do not replicate. nbdime-rs never raises here and produces the `replace`
+  upstream intends. The parity oracle for generic diffs is upstream with a predicate table whose
+  lookups do not insert keys (`parity/harness.py: generic_diff_fixed`);
+  `test_pilot_f001_fix_is_neutral` checks that this only changes cases where upstream raises.
 - **Upstream report**: candidate. Not reported (needs approval).
 
 ### F-002: `format_merge_render_lines` duplicates the common last line
@@ -61,6 +63,9 @@ anything requires explicit approval from the project owner (see CLAUDE.md).
 ## Open questions
 
 - **Q-001**: accept deterministic ids (F-003)?
-- **Q-002**: does `nbformat.read` accept a UTF-8 BOM? Check before porting the reader.
+- **Q-002** (answered): `nbformat.read` rejects a UTF-8 BOM (`NotJSONError`, `nbdiff` exits 1
+  with a traceback). Proposed deviation: accept and ignore a BOM, since editors on Windows
+  sometimes add one. The JSON layer itself rejects it, like `json.loads`; the notebook reader
+  (U02) decides.
 - **Q-003**: nbformat v3 and older inputs: port `nbformat.convert` upconversion, or shell out /
   reject with a clear error? Proposed: port v3→v4 conversion in Phase 2 (small, well specified).

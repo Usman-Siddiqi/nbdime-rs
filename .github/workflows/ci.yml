@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test
+
+  parity:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install the oracle (nbdime 4.0.4)
+        run: pip install "nbdime==4.0.4" "nbformat==5.11.1" pytest
+      - name: Fetch upstream test notebooks
+        run: git clone --depth 1 --branch v4.0.4 https://github.com/jupyter/nbdime.git "$RUNNER_TEMP/nbdime-upstream"
+      - run: cargo build --release -p nbdime-cli
+      - name: Parity suites
+        env:
+          NBDIME_UPSTREAM: ${{ runner.temp }}/nbdime-upstream
+        run: |
+          mapfile -t suites < <(grep -v '^\s*#' parity/enabled_suites.txt | sed '/^\s*$/d' | sed 's#^#parity/#')
+          python -m pytest -c parity/pytest.ini -p no:tornasync "${suites[@]}"

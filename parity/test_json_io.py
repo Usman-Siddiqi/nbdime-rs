@@ -73,7 +73,8 @@ def test_json_rejects_what_python_rejects(engine):
     bad = ["", "01", "1.", ".5", "+1", "[1,]", '{"a":1,}', "'a'", '"\t"', "[1 2]", "nul",
            "﻿{}", '{"a" 1}', '"\\x"', '"\\u12"', "1 2", "[", '{"a":', "-", "-Inf", "nan"]
     cases = [{"text": t, "options": {}} for t in bad]
-    check_parity(engine, "json.loads_dumps", cases, oracle_loads_dumps, min_cases=len(bad))
+    check_parity(engine, "json.loads_dumps", cases, oracle_loads_dumps, min_cases=len(bad),
+                 max_error_fraction=1.0)
 
 
 def test_json_upstream_notebooks(engine):

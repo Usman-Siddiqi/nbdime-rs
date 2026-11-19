@@ -2,14 +2,14 @@
 # Merge gate for a unit branch. Protected: only the orchestrator edits this file.
 #
 # usage: scripts/gate.sh [parity test files or pytest args...]
-#   GATE_BASE   branch the unit was cut from (default: claude/project-thread-0e989x)
+#   GATE_BASE   branch the unit was cut from (default: main)
 #   REF_PYTHON  python with nbdime==4.0.4 (default: /home/claude/ref/venv/bin/python)
 #
 # With no arguments, runs the suites listed in parity/enabled_suites.txt.
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 
-base="${GATE_BASE:-claude/project-thread-0e989x}"
+base="${GATE_BASE:-main}"
 py="${REF_PYTHON:-/home/claude/ref/venv/bin/python}"
 
 step() { printf '\n== %s\n' "$*"; }

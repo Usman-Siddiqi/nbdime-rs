@@ -141,23 +141,38 @@ impl Value {
         }
     }
 
-    /// Python `self == other` for values parsed from JSON.
+    /// Python `self == other` for two values compared directly, as `==` does.
     ///
     /// Numbers compare by mathematical value across `bool`, `int` and `float`; containers compare
-    /// element-wise, dicts ignoring key order. `NaN` never equals anything: two values parsed
-    /// independently are never the same Python object, so the identity shortcut of container
-    /// comparison never applies.
+    /// element-wise, dicts ignoring key order. A bare `NaN` never equals anything, but inside
+    /// containers the comparison short-circuits on object identity, and CPython's `json` returns
+    /// one shared `NaN` object: `[NaN] == [NaN]` and `{"x": NaN} == {"x": NaN}` hold, at every
+    /// nesting level.
     pub fn py_eq(&self, other: &Value) -> bool {
+        self.eq_with(other, false)
+    }
+
+    /// Python equality of two items of a container: `PyObject_RichCompareBool`, which treats a
+    /// `NaN` as equal to itself.
+    pub fn py_eq_item(&self, other: &Value) -> bool {
+        self.eq_with(other, true)
+    }
+
+    fn eq_with(&self, other: &Value, nan_is_identical: bool) -> bool {
         use Value::*;
         match (self, other) {
             (Null, Null) => true,
             (Str(a), Str(b)) => a == b,
-            (List(a), List(b)) => a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.py_eq(y)),
+            (List(a), List(b)) => {
+                a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.py_eq_item(y))
+            }
             (Object(a), Object(b)) => {
-                a.len() == b.len() && a.iter().all(|(k, v)| b.get(k).is_some_and(|w| v.py_eq(w)))
+                a.len() == b.len()
+                    && a.iter()
+                        .all(|(k, v)| b.get(k).is_some_and(|w| v.py_eq_item(w)))
             }
             (Bool(a), Bool(b)) => a == b,
-            (Float(a), Float(b)) => a == b,
+            (Float(a), Float(b)) => a == b || (nan_is_identical && a.is_nan() && b.is_nan()),
             (Int(a), Int(b)) => a == b,
             (Int(i), Float(f)) | (Float(f), Int(i)) => i.eq_float(*f),
             (Bool(b), Int(i)) | (Int(i), Bool(b)) => *i == crate::value::Int::Small(i64::from(*b)),
@@ -309,9 +324,25 @@ mod tests {
         assert!(Value::Bool(true).py_eq(&Value::Float(1.0)));
         assert!(Value::Bool(false).py_eq(&Value::Float(-0.0)));
         assert!(!int(1).py_eq(&Value::Float(1.5)));
-        assert!(!Value::Float(f64::NAN).py_eq(&Value::Float(f64::NAN)));
         assert!(!int(1).py_eq(&Value::from("1")));
         assert!(!Value::Null.py_eq(&Value::Bool(false)));
+    }
+
+    #[test]
+    fn nan_is_unequal_directly_and_identical_inside_containers() {
+        let nan = || Value::Float(f64::NAN);
+        assert!(!nan().py_eq(&nan()));
+        assert!(nan().py_eq_item(&nan()));
+        assert!(!nan().py_eq_item(&Value::Float(1.0)));
+
+        let list = |v: Value| Value::List(vec![v]);
+        assert!(list(nan()).py_eq(&list(nan())));
+        assert!(list(list(nan())).py_eq(&list(list(nan()))));
+        assert!(!list(nan()).py_eq(&list(Value::Float(0.0))));
+
+        let object = |v: Value| Value::Object(Map::from_iter([("z".to_owned(), v)]));
+        assert!(object(nan()).py_eq(&object(nan())));
+        assert!(list(object(list(nan()))).py_eq(&list(object(list(nan())))));
     }
 
     #[test]

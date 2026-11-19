@@ -176,6 +176,18 @@ mod tests {
     }
 
     #[test]
+    fn nan_inside_containers_aligns() {
+        let list = |v: f64| Value::List(vec![Value::Float(v), Value::from(1)]);
+        let a = [list(f64::NAN), Value::Float(f64::NAN)];
+        let b = [list(f64::NAN), Value::Float(f64::NAN)];
+        let d = diff_sequence_bruteforce(&a, &b, |x, y| x.py_eq(y));
+        assert_eq!(
+            crate::json::dumps(&diff_to_value(&d), &crate::json::DumpOptions::compact()),
+            r#"[{"op":"addrange","key":1,"valuelist":[NaN]},{"op":"removerange","key":1,"length":1}]"#
+        );
+    }
+
+    #[test]
     fn diff_orders_addrange_before_removerange() {
         let a = [Value::from("x"), Value::from("y")];
         let b = [Value::from("z")];

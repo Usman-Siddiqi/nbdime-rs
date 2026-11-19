@@ -293,6 +293,33 @@ mod tests {
     }
 
     #[test]
+    fn nan_equality_depends_on_nesting() {
+        // A bare NaN is unequal to itself, a NaN inside a container is identical to itself, so
+        // the containers align and are diffed in turn.
+        assert_eq!(
+            diff_json("[[NaN],1]", "[[NaN],2]"),
+            concat!(
+                r#"[{"op":"patch","key":0,"diff":[{"op":"addrange","key":0,"valuelist":[NaN]},"#,
+                r#"{"op":"removerange","key":0,"length":1}]},"#,
+                r#"{"op":"addrange","key":1,"valuelist":[2]},"#,
+                r#"{"op":"removerange","key":1,"length":1}]"#
+            )
+        );
+        assert_eq!(
+            diff_json(r#"[{"z":NaN}]"#, r#"[{"z":NaN}]"#),
+            r#"[{"op":"patch","key":0,"diff":[{"op":"replace","key":"z","value":NaN}]}]"#
+        );
+        assert_eq!(
+            diff_json("[NaN]", "[NaN]"),
+            r#"[{"op":"addrange","key":0,"valuelist":[NaN]},{"op":"removerange","key":0,"length":1}]"#
+        );
+        assert_eq!(
+            diff_json(r#"{"a":NaN}"#, r#"{"a":NaN}"#),
+            r#"[{"op":"replace","key":"a","value":NaN}]"#
+        );
+    }
+
+    #[test]
     fn nested_scalars_never_recurse() {
         assert_eq!(
             diff_json(r#"[1,2]"#, r#"[1,3]"#),

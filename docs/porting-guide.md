@@ -61,9 +61,15 @@ pub enum Value {
   - `Int` vs `Float` compares mathematically (Python compares int and float exactly, not by
     converting the int to float: `2**53 + 1 != float(2**53 + 1)` is True).
   - Lists equal elementwise; dicts equal if same key set and values `py_eq` (order ignored).
-  - Python's `==` on containers short-circuits on identity first, so `[nan] == [nan]` is `True`
-    when it is the same object. Values parsed from two different files are never identical
-    objects, so for our purposes `NaN` never equals `NaN`. Record any case where this matters.
+  - Python's `==` on containers compares elements with `PyObject_RichCompareBool`, which treats
+    **identical objects as equal** before comparing values. CPython's `json` returns one shared
+    `NaN` object for every `NaN` literal it parses (nbformat keeps it), so in nbdime's world
+    `[NaN] == [NaN]` and `{"x": NaN} == {"x": NaN}` are `True`, while a bare `NaN == NaN` (the
+    `==` predicate on two list items, or `avalue != bvalue` in `diff_dicts`) is `False`.
+    `Value::py_eq` therefore has two levels: top-level NaN is unequal, NaN nested in a container
+    is equal to NaN. (Found by hostile review of the pilot; the first version of this guide had it
+    wrong.) Values passed in through the Python bindings may carry distinct NaN objects; that edge
+    is recorded in findings F-008.
 - **Type identity checks** (`type(a) is type(b)`) are a separate function, `Value::same_type`,
   where `Bool`, `Int`, `Float` are three different types.
 - **Atomic values**: `config.is_atomic(x)` is true for anything that is not `Str`, `List` or

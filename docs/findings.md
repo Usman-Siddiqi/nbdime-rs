@@ -62,8 +62,31 @@ anything requires explicit approval from the project owner (see CLAUDE.md).
 
 ### F-005: lone surrogates in JSON strings
 - **What**: Python accepts `"\ud800"` and keeps a lone surrogate; Rust `String` cannot hold it.
-- **Decision (proposed)**: replace with U+FFFD on input and emit a warning on stderr. Real
-  notebooks essentially never contain them; nbformat would fail to write them back as UTF-8 too.
+- **First proposal (rejected)**: replace with U+FFFD. Hostile review of the pilot showed this
+  silently hides real changes: `["\ud800"]` vs `["\udc00"]` diffs as equal, and two distinct
+  keys `"\ud800"`/`"\ud801"` collapse into one, so a removed key is never reported.
+- **Decision**: reject input containing lone surrogates with a clear error (the default
+  `LoneSurrogates::Reject`). Never report a wrong diff silently. Real notebooks essentially never
+  contain them, and nbformat cannot write them back as UTF-8 either. Through the Python bindings,
+  a `str` with lone surrogates fails conversion, so the integration falls back to pure Python.
+
+### F-008: NaN identity (parity rule, not a deviation)
+- CPython's `json` returns one shared `NaN` object, and container equality short-circuits on
+  identity, so `[NaN] == [NaN]` is True while `NaN == NaN` is False. nbdime-rs reproduces this
+  (porting guide 2.1). Through the Python bindings, callers can pass distinct NaN objects (e.g.
+  `float("nan")` built in code), for which Python's answer would differ; the bindings assume the
+  JSON-parsed case. Not worth special handling.
+
+### F-009: nesting depth
+- Upstream's recursive diff raises `RecursionError` at a few hundred levels of nesting (Python's
+  default recursion limit is 1000 frames, several frames per level); `json.loads` accepts 9998.
+- **Decision**: nbdime-rs diffs up to `MAX_DIFF_DEPTH` levels and returns an error beyond it,
+  instead of overflowing the stack (which aborts the process). Between upstream's limit and ours
+  we succeed where upstream raises; deliberate.
+
+### F-010: integer digit limit
+- Python 3.11+ refuses to parse integers with more than 4300 digits (`ValueError`), so
+  `json.loads`/`nbformat.read` fail on such files. nbdime-rs reproduces the error.
 
 ## Open questions
 

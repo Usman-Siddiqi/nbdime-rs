@@ -19,13 +19,15 @@ pub struct ParseError {
 
 /// How lone UTF-16 surrogates in `\u` escapes are handled.
 ///
-/// Python keeps them in the string; Rust strings cannot hold them.
+/// Python keeps them in the string; Rust strings cannot hold them. Replacing them makes distinct
+/// strings equal and so can hide real differences, which is why rejecting is the default.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum LoneSurrogates {
-    /// Replace each with U+FFFD and count it in [`Parsed::replaced_surrogates`].
+    /// Fail with an error naming the surrogate.
     #[default]
-    Replace,
     Reject,
+    /// Replace each with U+FFFD and count it in [`Parsed::replaced_surrogates`].
+    Replace,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -41,6 +43,10 @@ pub struct Parsed {
 
 /// Deepest nesting CPython 3.13's `json.loads` accepts from a shallow call stack.
 pub const MAX_DEPTH: usize = 9998;
+
+/// Python 3.11+ refuses to convert integer literals with more digits than this (a limit on
+/// `int(str)`, which `json` uses for every integer literal).
+pub const MAX_INT_DIGITS: usize = 4300;
 
 pub fn parse(text: &str) -> Result<Value, ParseError> {
     parse_with(text, ParseOptions::default()).map(|p| p.value)
@@ -289,6 +295,16 @@ impl Parser<'_> {
             Ok(Value::Float(f))
         } else {
             debug_assert_eq!(int_end, self.pos);
+            let digits = text.trim_start_matches('-').len();
+            if digits > MAX_INT_DIGITS {
+                return Err(self.error_at(
+                    start,
+                    &format!(
+                        "Exceeds the limit ({MAX_INT_DIGITS} digits) for integer string \
+                         conversion: value has {digits} digits"
+                    ),
+                ));
+            }
             let canonical = if text == "-0" { "0" } else { text };
             Ok(Value::Int(Int::from_literal(canonical)))
         }
@@ -359,7 +375,13 @@ impl Parser<'_> {
                             char::REPLACEMENT_CHARACTER
                         }
                         LoneSurrogates::Reject => {
-                            return Err(self.error_at(esc_pos, "Lone surrogate in string"))
+                            return Err(self.error_at(
+                                esc_pos,
+                                &format!(
+                                    "Lone UTF-16 surrogate \\u{hi:04x} in string, which cannot be \
+                                     represented in UTF-8"
+                                ),
+                            ))
                         }
                     },
                 };
@@ -450,13 +472,46 @@ mod tests {
     fn escapes_and_surrogates() {
         assert_eq!(parse(r#""\ud83d\ude00""#).unwrap(), Value::from("😀"));
         assert_eq!(parse(r#""a\/b\n""#).unwrap(), Value::from("a/b\n"));
-        let parsed = parse_with(r#""\ud800x""#, ParseOptions::default()).unwrap();
+        let replace = ParseOptions {
+            lone_surrogates: LoneSurrogates::Replace,
+        };
+        let parsed = parse_with(r#""\ud800x""#, replace).unwrap();
         assert_eq!(parsed.value, Value::from("\u{fffd}x"));
         assert_eq!(parsed.replaced_surrogates, 1);
-        let reject = ParseOptions {
-            lone_surrogates: LoneSurrogates::Reject,
-        };
-        assert!(parse_with(r#""\udc00""#, reject).is_err());
+    }
+
+    #[test]
+    fn lone_surrogates_are_rejected_by_default() {
+        for text in [
+            r#""\ud800""#,
+            r#"["\udc00"]"#,
+            r#"{"\udbff": 1}"#,
+            r#""a\ud800\u0041""#,
+            r#""\ud800\ud800""#,
+        ] {
+            let err = parse(text).unwrap_err();
+            assert!(
+                err.message.contains("Lone UTF-16 surrogate"),
+                "{text}: {err}"
+            );
+        }
+        let err = parse(r#""ab\udc00""#).unwrap_err();
+        assert!(err.message.contains("\\udc00"), "{err}");
+        assert_eq!(err.offset, 3);
+    }
+
+    #[test]
+    fn integer_digit_limit() {
+        let digits = |n: usize| "1".repeat(n);
+        assert!(parse(&digits(MAX_INT_DIGITS)).is_ok());
+        assert!(parse(&format!("-{}", digits(MAX_INT_DIGITS))).is_ok());
+        for text in [digits(MAX_INT_DIGITS + 1), format!("[-{}]", digits(5000))] {
+            let err = parse(&text).unwrap_err();
+            assert!(err.message.contains("4300 digits"), "{err}");
+        }
+        // Floats and exponents are not integer conversions.
+        assert!(parse(&format!("{}.5", digits(MAX_INT_DIGITS + 1))).is_ok());
+        assert!(parse(&format!("{}e0", digits(MAX_INT_DIGITS + 1))).is_ok());
     }
 
     #[test]

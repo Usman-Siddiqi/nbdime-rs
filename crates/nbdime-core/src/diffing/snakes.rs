@@ -1,10 +1,12 @@
 //! Snakes: maximal runs of consecutive aligned items, computed under several predicates of
 //! increasing strictness.
 
+use std::convert::Infallible;
+
 use crate::diff_format::{Diff, SequenceDiffBuilder};
 use crate::value::Value;
 
-use super::sequence::lcs_indices;
+use super::sequence::{never_fails, try_lcs_indices};
 
 /// `n` consecutive items starting at `a[i]` and `b[j]` that are aligned with each other.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -14,7 +16,7 @@ pub struct Snake {
     pub n: usize,
 }
 
-/// A compare predicate on sequence items.
+/// An infallible compare predicate on sequence items.
 pub type Compare<'a, T> = &'a dyn Fn(&T, &T) -> bool;
 
 /// `a[i0..i1]` x `b[j0..j1]`.
@@ -31,8 +33,13 @@ struct Rect {
 /// Upstream extends the last snake when the new pair equals its *start* rather than its end, which
 /// only ever happens for a pair at (0, 0) of the rectangle. Every other pair is a snake of its
 /// own, and this is reproduced because the snake list is observable.
-fn compute_snakes<T>(a: &[T], b: &[T], compare: Compare<T>, rect: Rect) -> Vec<Snake> {
-    let pairs = lcs_indices(&a[rect.i0..rect.i1], &b[rect.j0..rect.j1], compare);
+fn compute_snakes<T, E>(
+    a: &[T],
+    b: &[T],
+    compare: impl Fn(&T, &T) -> Result<bool, E>,
+    rect: Rect,
+) -> Result<Vec<Snake>, E> {
+    let pairs = try_lcs_indices(&a[rect.i0..rect.i1], &b[rect.j0..rect.j1], compare)?;
     let mut snakes = vec![Snake { i: 0, j: 0, n: 0 }];
     for (i, j) in pairs {
         match snakes.last_mut() {
@@ -47,7 +54,7 @@ fn compute_snakes<T>(a: &[T], b: &[T], compare: Compare<T>, rect: Rect) -> Vec<S
         snake.i += rect.i0;
         snake.j += rect.j0;
     }
-    snakes
+    Ok(snakes)
 }
 
 /// Snakes under several predicates, ordered from the loosest to the strictest.
@@ -58,6 +65,25 @@ fn compute_snakes<T>(a: &[T], b: &[T], compare: Compare<T>, rect: Rect) -> Vec<S
 /// # Panics
 /// If `compares` is empty.
 pub fn compute_snakes_multilevel<T>(a: &[T], b: &[T], compares: &[Compare<T>]) -> Vec<Snake> {
+    let fallible: Vec<_> = compares
+        .iter()
+        .map(|compare| move |x: &T, y: &T| Ok::<_, Infallible>(compare(x, y)))
+        .collect();
+    never_fails(try_compute_snakes_multilevel(a, b, &fallible))
+}
+
+/// [`compute_snakes_multilevel`] with predicates that can fail; the first error is returned.
+///
+/// # Panics
+/// If `compares` is empty.
+pub fn try_compute_snakes_multilevel<T, E, C>(
+    a: &[T],
+    b: &[T],
+    compares: &[C],
+) -> Result<Vec<Snake>, E>
+where
+    C: Fn(&T, &T) -> Result<bool, E>,
+{
     assert!(!compares.is_empty(), "at least one predicate is required");
     let rect = Rect {
         i0: 0,
@@ -68,16 +94,19 @@ pub fn compute_snakes_multilevel<T>(a: &[T], b: &[T], compares: &[Compare<T>]) -
     multilevel(a, b, compares, rect, compares.len() - 1)
 }
 
-fn multilevel<T>(
+fn multilevel<T, E, C>(
     a: &[T],
     b: &[T],
-    compares: &[Compare<T>],
+    compares: &[C],
     rect: Rect,
     level: usize,
-) -> Vec<Snake> {
-    let snakes = compute_snakes(a, b, compares[level], rect);
+) -> Result<Vec<Snake>, E>
+where
+    C: Fn(&T, &T) -> Result<bool, E>,
+{
+    let snakes = compute_snakes(a, b, &compares[level], rect)?;
     if level == 0 {
-        return snakes;
+        return Ok(snakes);
     }
 
     let mut merged = vec![Snake { i: 0, j: 0, n: 0 }];
@@ -95,7 +124,7 @@ fn multilevel<T>(
                 i1: snake.i,
                 j1: snake.j,
             };
-            merged.extend(multilevel(a, b, compares, gap, level - 1));
+            merged.extend(multilevel(a, b, compares, gap, level - 1)?);
         }
         if snake.n > 0 {
             match merged.last_mut() {
@@ -111,7 +140,7 @@ fn multilevel<T>(
     if merged[0].n == 0 {
         merged.remove(0);
     }
-    merged
+    Ok(merged)
 }
 
 /// Converts snakes to a diff: the items between snakes are removed and added (`to_value` makes

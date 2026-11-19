@@ -5,8 +5,8 @@ use crate::diff_utils::count_consumed_symbols;
 use crate::value::{Map, Value};
 
 use super::config::{join_path, DiffConfig};
-use super::sequence::diff_sequence_bruteforce;
-use super::snakes::{compute_diff_from_snakes, compute_snakes_multilevel, Compare};
+use super::sequence::try_diff_sequence_bruteforce;
+use super::snakes::{compute_diff_from_snakes, try_compute_snakes_multilevel};
 use super::strings::diff_strings_linewise;
 use super::{DiffError, MAX_DIFF_DEPTH};
 
@@ -63,7 +63,7 @@ pub(super) fn diff_lists(
     }
 
     let predicate = predicates[0];
-    let shallow = diff_sequence_bruteforce(a, b, |x, y| predicate.apply(x, y));
+    let shallow = try_diff_sequence_bruteforce(a, b, |x, y| predicate.apply(x, y))?;
 
     let subpath = join_path(path, "*");
     let differ = config.differ(&subpath);
@@ -107,12 +107,11 @@ fn diff_sequence_multilevel(
     config: &DiffConfig,
 ) -> Result<Diff, DiffError> {
     let predicates = config.predicates(root_if_empty(path));
-    let closures: Vec<_> = predicates
+    let compares: Vec<_> = predicates
         .iter()
         .map(|&p| move |x: &Value, y: &Value| p.apply(x, y))
         .collect();
-    let compares: Vec<Compare<Value>> = closures.iter().map(|c| c as Compare<Value>).collect();
-    let snakes = compute_snakes_multilevel(a, b, &compares);
+    let snakes = try_compute_snakes_multilevel(a, b, &compares)?;
     let subpath = join_path(path, "*");
     let differ = config.differ(&subpath);
     compute_diff_from_snakes(a, b, &snakes, Value::clone, |x, y| {
@@ -168,6 +167,7 @@ fn root_if_empty(path: &str) -> &str {
 
 #[cfg(test)]
 mod tests {
+    use super::super::config::Predicate;
     use super::*;
     use crate::diff_format::diff_to_value;
     use crate::json::{dumps, parse, DumpOptions};
@@ -197,6 +197,48 @@ mod tests {
         assert_eq!(
             diff_json(r#"[1,{"a":2},"x"]"#, r#"[true,{"a":2.0},"y"]"#),
             r#"[{"op":"addrange","key":2,"valuelist":["y"]},{"op":"removerange","key":2,"length":1}]"#
+        );
+    }
+
+    fn diff_approximately(a: &str, b: &str) -> Result<String, DiffError> {
+        let mut config = DiffConfig::default();
+        config.set_predicates("/", vec![Predicate::StringsApproximate, Predicate::Eq]);
+        let d = diff_with_config(&parse(a).unwrap(), &parse(b).unwrap(), "", &config)?;
+        Ok(dumps(&diff_to_value(&d), &DumpOptions::compact()))
+    }
+
+    #[test]
+    fn approximate_predicate_aligns_similar_lists() {
+        let patch_of_last_item = |valuelist: &str| {
+            format!(
+                r#"[{{"op":"patch","key":0,"diff":[{{"op":"addrange","key":3,"valuelist":[{valuelist}]}},{{"op":"removerange","key":3,"length":1}}]}}]"#
+            )
+        };
+        assert_eq!(
+            diff_approximately(r#"[["a","b","c","d"]]"#, r#"[["a","b","c","e"]]"#).unwrap(),
+            patch_of_last_item(r#""e""#)
+        );
+        assert_eq!(
+            diff_approximately("[[1,1.0,true,4]]", "[[true,1,1.0,5]]").unwrap(),
+            patch_of_last_item("5")
+        );
+    }
+
+    #[test]
+    fn approximate_predicate_rejects_operands_it_cannot_compare() {
+        assert_eq!(
+            diff_approximately("[1,2]", "[1,3]"),
+            Err(DiffError::ApproximateOperands)
+        );
+        assert_eq!(
+            diff_approximately("[[[1],2,3,4]]", "[[[1],2,3,5]]"),
+            Err(DiffError::UnhashableItem)
+        );
+        // 0 and 1 differ in truthiness, so they are unequal rather than incomparable; the aligned
+        // 0 vs 0 pair is then not diffable.
+        assert_eq!(
+            diff_approximately("[0,1]", "[1,0]"),
+            Err(DiffError::UnsupportedTypes)
         );
     }
 

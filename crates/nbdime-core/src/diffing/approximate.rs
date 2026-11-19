@@ -2,8 +2,15 @@
 
 use std::cell::OnceCell;
 
-use crate::difflib::{quick_ratio_sorted, real_quick_ratio, PositionIndex, SequenceMatcher};
+use crate::difflib::{
+    quick_ratio, quick_ratio_sorted, real_quick_ratio, PositionIndex, SequenceMatcher,
+};
 use crate::py::py_len;
+use crate::value::{Hashable, Value};
+
+use super::DiffError;
+
+const THRESHOLD: f64 = 0.7;
 
 /// A string with the derived data that [`PreparedStr::is_similar`] needs, computed on first use
 /// and kept, so that comparing one string against many does the work once per string rather
@@ -90,9 +97,53 @@ pub fn compare_strings_approximate(
     PreparedStr::new(x).is_similar(&PreparedStr::new(y), threshold, maxlen)
 }
 
+/// The `strings_approximate` predicate as upstream applies it to two arbitrary values: the
+/// operands are strings or lists (compared item by item), and anything else is a `TypeError`
+/// there, so it is an error here.
+pub(super) fn compare_values_approximate(x: &Value, y: &Value) -> Result<bool, DiffError> {
+    // Upstream tests `bool(x) != bool(y)` first, so operands that differ in truthiness never
+    // reach the type error.
+    if x.truthy() != y.truthy() {
+        return Ok(false);
+    }
+    match (x, y) {
+        (Value::Str(x), Value::Str(y)) => Ok(compare_strings_approximate(x, y, THRESHOLD, None)),
+        (Value::List(x), Value::List(y)) => compare_lists_approximate(x, y),
+        _ => Err(DiffError::ApproximateOperands),
+    }
+}
+
+fn hashable_items(items: &[Value]) -> Result<Vec<Hashable<'_>>, DiffError> {
+    items
+        .iter()
+        .map(|item| item.as_hashable().ok_or(DiffError::UnhashableItem))
+        .collect()
+}
+
+/// `compare_strings_approximate` on two non-empty lists, the items taking the place of the
+/// characters. Items must be hashable, as upstream hashes them to count occurrences.
+fn compare_lists_approximate(x: &[Value], y: &[Value]) -> Result<bool, DiffError> {
+    if x.len() == y.len() && x.iter().zip(y).all(|(p, q)| p.py_eq_item(q)) {
+        return Ok(true);
+    }
+    if real_quick_ratio(x.len(), y.len()) < THRESHOLD {
+        return Ok(false);
+    }
+    let (x, y) = (hashable_items(x)?, hashable_items(y)?);
+    if quick_ratio(&x, &y) < THRESHOLD {
+        return Ok(false);
+    }
+    Ok(SequenceMatcher::new(&x, &y).ratio() > THRESHOLD)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::json::parse;
+
+    fn approx(x: &str, y: &str) -> Result<bool, DiffError> {
+        compare_values_approximate(&parse(x).unwrap(), &parse(y).unwrap())
+    }
 
     #[test]
     fn approximate_comparison_rules() {
@@ -140,5 +191,53 @@ mod tests {
             0.5,
             None
         ));
+    }
+
+    #[test]
+    fn strings_and_lists_compare_by_items() {
+        assert_eq!(approx(r#""abcdefgh""#, r#""abcdefgx""#), Ok(true));
+        assert_eq!(
+            approx(r#"["a","b","c","d"]"#, r#"["a","b","c","e"]"#),
+            Ok(true)
+        );
+        assert_eq!(
+            approx(r#"["a","b","c","d"]"#, r#"["w","x","y","z"]"#),
+            Ok(false)
+        );
+        // ratio 2 * 1 / 4 = 0.5 is below the threshold.
+        assert_eq!(approx("[1, 2]", "[1, 3]"), Ok(false));
+        // 1, 1.0 and true are one item, so the lists are equal.
+        assert_eq!(approx("[1, 1.0, true]", "[true, 1, 1.0]"), Ok(true));
+        assert_eq!(approx("[NaN, 1]", "[NaN, 1]"), Ok(true));
+    }
+
+    #[test]
+    fn operands_of_other_types_are_an_error() {
+        assert_eq!(approx("1", "2"), Err(DiffError::ApproximateOperands));
+        assert_eq!(approx("[1]", r#""a""#), Err(DiffError::ApproximateOperands));
+        assert_eq!(
+            approx(r#"{"a": 1}"#, r#"{"a": 2}"#),
+            Err(DiffError::ApproximateOperands)
+        );
+        assert_eq!(approx("null", "null"), Err(DiffError::ApproximateOperands));
+    }
+
+    #[test]
+    fn operands_that_differ_in_truthiness_never_match() {
+        assert_eq!(approx("0", "1"), Ok(false));
+        assert_eq!(approx("null", "true"), Ok(false));
+        assert_eq!(approx("[]", "[1]"), Ok(false));
+        assert_eq!(approx(r#""""#, r#""x""#), Ok(false));
+    }
+
+    #[test]
+    fn unhashable_list_items_are_an_error() {
+        assert_eq!(
+            approx("[[1], 2, 3, 4]", "[[1], 2, 3, 5]"),
+            Err(DiffError::UnhashableItem)
+        );
+        // Equal lists and lists of very different lengths never get as far as hashing.
+        assert_eq!(approx("[[1], 2]", "[[1], 2]"), Ok(true));
+        assert_eq!(approx("[[1]]", "[[1], 2, 3, 4]"), Ok(false));
     }
 }

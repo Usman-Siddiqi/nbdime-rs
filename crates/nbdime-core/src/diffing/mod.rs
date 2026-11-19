@@ -25,6 +25,10 @@ pub enum DiffError {
     TooDeep(usize),
     #[error("Can currently only diff list, dict, or str objects.")]
     UnsupportedTypes,
+    #[error("Approximate comparison needs two strings or two lists.")]
+    ApproximateOperands,
+    #[error("Cannot compare lists approximately: unhashable list or dict item.")]
+    UnhashableItem,
     #[error("Arguments need to be string types.")]
     NotStrings,
     #[error("invalid diff: {0}")]

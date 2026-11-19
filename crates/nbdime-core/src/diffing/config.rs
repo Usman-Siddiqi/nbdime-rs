@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use crate::diff_format::Diff;
 use crate::value::Value;
 
-use super::approximate::compare_strings_approximate;
+use super::approximate::compare_values_approximate;
 use super::generic::diff_values;
 use super::strings::diff_strings_by_char;
 use super::DiffError;
@@ -16,19 +16,17 @@ use super::DiffError;
 pub enum Predicate {
     /// Python `==`.
     Eq,
-    /// `compare_strings_approximate` with its default threshold. Operands that are not both
-    /// strings never compare equal.
+    /// `compare_strings_approximate` with its default threshold, on two strings or two lists.
+    /// Other operands are an error unless they differ in truthiness.
     StringsApproximate,
 }
 
 impl Predicate {
-    pub(super) fn apply(self, a: &Value, b: &Value) -> bool {
+    /// Whether `a` and `b` count as the same item.
+    pub(super) fn apply(self, a: &Value, b: &Value) -> Result<bool, DiffError> {
         match self {
-            Predicate::Eq => a.py_eq(b),
-            Predicate::StringsApproximate => match (a, b) {
-                (Value::Str(x), Value::Str(y)) => compare_strings_approximate(x, y, 0.7, None),
-                _ => false,
-            },
+            Predicate::Eq => Ok(a.py_eq(b)),
+            Predicate::StringsApproximate => compare_values_approximate(a, b),
         }
     }
 }

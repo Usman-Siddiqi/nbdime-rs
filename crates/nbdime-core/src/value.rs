@@ -6,6 +6,7 @@
 
 use std::cmp::Ordering;
 use std::fmt;
+use std::hash::{Hash, Hasher};
 
 use indexmap::IndexMap;
 
@@ -244,6 +245,62 @@ impl Value {
     }
 }
 
+/// A value that Python can hash (`None`, numbers and strings), usable as a dictionary key.
+///
+/// Equality is that of container items and the hash agrees with it, so `1`, `1.0` and `True`
+/// are the same key and `NaN` equals itself.
+#[derive(Clone, Copy, Debug)]
+pub struct Hashable<'a>(&'a Value);
+
+impl Value {
+    /// `None` for lists and objects, which Python cannot hash.
+    pub fn as_hashable(&self) -> Option<Hashable<'_>> {
+        match self {
+            Value::List(_) | Value::Object(_) => None,
+            _ => Some(Hashable(self)),
+        }
+    }
+}
+
+impl PartialEq for Hashable<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.py_eq_item(other.0)
+    }
+}
+
+impl Eq for Hashable<'_> {}
+
+impl Hash for Hashable<'_> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        /// An integer-valued number: equal numbers must hash alike across bool, int and float.
+        enum Number<'s> {
+            Small(i64),
+            Big(std::borrow::Cow<'s, str>),
+        }
+        let number = match self.0 {
+            Value::Null => return 0u8.hash(state),
+            Value::Str(s) => return (1u8, s).hash(state),
+            Value::Bool(b) => Number::Small(i64::from(*b)),
+            Value::Int(Int::Small(v)) => Number::Small(*v),
+            Value::Int(Int::Big(digits)) => Number::Big(digits.into()),
+            Value::Float(f) if f.is_nan() => return 2u8.hash(state),
+            Value::Float(f) if f.is_finite() && f.fract() == 0.0 => {
+                if (i64::MIN as f64..-(i64::MIN as f64)).contains(f) {
+                    Number::Small(*f as i64)
+                } else {
+                    Number::Big(format!("{f:.0}").into())
+                }
+            }
+            Value::Float(f) => return (3u8, f.to_bits()).hash(state),
+            Value::List(_) | Value::Object(_) => unreachable!("unhashable values are excluded"),
+        };
+        match number {
+            Number::Small(v) => (4u8, v).hash(state),
+            Number::Big(digits) => (5u8, digits).hash(state),
+        }
+    }
+}
+
 /// Python's ordering of `int` values, used where nbdime sorts integer keys.
 pub fn cmp_int(a: &Int, b: &Int) -> Ordering {
     match (a, b) {
@@ -400,6 +457,32 @@ mod tests {
         wide.insert("b".into(), nested(5));
         assert!(Value::Object(wide.clone()).nesting_exceeds(5));
         assert!(!Value::Object(wide).nesting_exceeds(6));
+    }
+
+    #[test]
+    fn hashable_values_hash_like_python() {
+        use std::collections::HashSet;
+        let values = [
+            int(1),
+            Value::Float(1.0),
+            Value::Bool(true),
+            Value::Float(f64::NAN),
+            Value::Float(f64::NAN),
+            Value::Float(1e20),
+            Value::Int(Int::from_literal("100000000000000000000")),
+            Value::Float(0.0),
+            Value::Float(-0.0),
+            Value::Bool(false),
+            int(0),
+            Value::Float(0.5),
+            Value::from("1"),
+            Value::Null,
+        ];
+        let keys: HashSet<_> = values.iter().filter_map(Value::as_hashable).collect();
+        // {1, NaN, 1e20, 0, 0.5, "1", None}
+        assert_eq!(keys.len(), 7);
+        assert!(Value::List(vec![]).as_hashable().is_none());
+        assert!(Value::Object(Map::new()).as_hashable().is_none());
     }
 
     #[test]

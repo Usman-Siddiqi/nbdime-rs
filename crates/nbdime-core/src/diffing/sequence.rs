@@ -3,8 +3,15 @@
 //! The predicate need not be an equivalence relation, so the result depends on the exact
 //! backtracking order of the dynamic programme; it is reproduced here.
 
+use std::convert::Infallible;
+
 use crate::diff_format::{Diff, SequenceDiffBuilder};
 use crate::value::Value;
+
+/// The value of a result that cannot be an error.
+pub(super) fn never_fails<T>(result: Result<T, Infallible>) -> T {
+    result.unwrap_or_else(|never| match never {})
+}
 
 /// `G[x][y] == compare(a[x], b[y])` as a bit matrix.
 struct CompareGrid {
@@ -13,18 +20,22 @@ struct CompareGrid {
 }
 
 impl CompareGrid {
-    fn new<T>(a: &[T], b: &[T], compare: &impl Fn(&T, &T) -> bool) -> Self {
+    fn new<T, E>(
+        a: &[T],
+        b: &[T],
+        compare: &impl Fn(&T, &T) -> Result<bool, E>,
+    ) -> Result<Self, E> {
         let cols = b.len();
         let mut bits = vec![0u64; (a.len() * cols).div_ceil(64)];
         for (x, ax) in a.iter().enumerate() {
             for (y, by) in b.iter().enumerate() {
-                if compare(ax, by) {
+                if compare(ax, by)? {
                     let bit = x * cols + y;
                     bits[bit / 64] |= 1 << (bit % 64);
                 }
             }
         }
-        CompareGrid { bits, cols }
+        Ok(CompareGrid { bits, cols })
     }
 
     fn get(&self, x: usize, y: usize) -> bool {
@@ -37,29 +48,38 @@ impl CompareGrid {
 ///
 /// `compare(a[i], b[j])` holds for every returned pair.
 pub fn lcs_indices<T>(a: &[T], b: &[T], compare: impl Fn(&T, &T) -> bool) -> Vec<(usize, usize)> {
+    never_fails(try_lcs_indices(a, b, |x, y| Ok(compare(x, y))))
+}
+
+/// [`lcs_indices`] with a predicate that can fail; the first error is returned.
+pub fn try_lcs_indices<T, E>(
+    a: &[T],
+    b: &[T],
+    compare: impl Fn(&T, &T) -> Result<bool, E>,
+) -> Result<Vec<(usize, usize)>, E> {
     // The backtrack below takes the diagonal at (N, M) whenever the last items compare equal, and
     // the table entries it then reads only depend on the prefixes, so a common suffix can be cut
     // off and appended without changing the result. A common prefix cannot be treated this way.
     let (mut n, mut m) = (a.len(), b.len());
-    while n > 0 && m > 0 && compare(&a[n - 1], &b[m - 1]) {
+    while n > 0 && m > 0 && compare(&a[n - 1], &b[m - 1])? {
         n -= 1;
         m -= 1;
     }
     let mut pairs = if n > 0 && m > 0 {
-        lcs_indices_without_suffix(&a[..n], &b[..m], &compare)
+        lcs_indices_without_suffix(&a[..n], &b[..m], &compare)?
     } else {
         Vec::new()
     };
     pairs.extend((n..a.len()).zip(m..b.len()));
-    pairs
+    Ok(pairs)
 }
 
-fn lcs_indices_without_suffix<T>(
+fn lcs_indices_without_suffix<T, E>(
     a: &[T],
     b: &[T],
-    compare: &impl Fn(&T, &T) -> bool,
-) -> Vec<(usize, usize)> {
-    let grid = CompareGrid::new(a, b, compare);
+    compare: &impl Fn(&T, &T) -> Result<bool, E>,
+) -> Result<Vec<(usize, usize)>, E> {
+    let grid = CompareGrid::new(a, b, compare)?;
     let (n, m) = (a.len(), b.len());
     let width = m + 1;
 
@@ -89,7 +109,7 @@ fn lcs_indices_without_suffix<T>(
         }
     }
     pairs.reverse();
-    pairs
+    Ok(pairs)
 }
 
 /// The diff turning `a` into `b` given the index pairs of their common subsequence.
@@ -125,6 +145,15 @@ pub fn diff_sequence_bruteforce(
     diff_from_lcs(a, b, &lcs_indices(a, b, compare))
 }
 
+/// [`diff_sequence_bruteforce`] with a predicate that can fail.
+pub fn try_diff_sequence_bruteforce<E>(
+    a: &[Value],
+    b: &[Value],
+    compare: impl Fn(&Value, &Value) -> Result<bool, E>,
+) -> Result<Diff, E> {
+    Ok(diff_from_lcs(a, b, &try_lcs_indices(a, b, compare)?))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -151,7 +180,7 @@ mod tests {
     #[test]
     fn suffix_stripping_keeps_results() {
         fn reference(a: &[char], b: &[char]) -> Vec<(usize, usize)> {
-            lcs_indices_without_suffix(a, b, &eq)
+            never_fails(lcs_indices_without_suffix(a, b, &|x, y| Ok(eq(x, y))))
         }
         let strings = ["", "a", "ab", "aab", "abab", "baab", "abcabba", "cbabac"];
         for s in strings {

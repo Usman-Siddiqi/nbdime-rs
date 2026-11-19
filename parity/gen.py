@@ -108,7 +108,8 @@ def text_pair(rng):
     return a, mutate_lines(rng, a)
 
 
-SCALARS = [None, True, False, 0, 1, -1, 1.0, 0.0, -0.0, 1.5, 2, 2.0, 10**20, 1e20, "", "a", "1", "x\ny\n"]
+SCALARS = [None, True, False, 0, 1, -1, 1.0, 0.0, -0.0, 1.5, 2, 2.0, 10**20, 1e20, float("nan"), float("inf"),
+           "", "a", "1", "x\ny\n"]
 
 
 def random_json(rng, depth=0, max_depth=4):

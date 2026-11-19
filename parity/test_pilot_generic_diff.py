@@ -236,3 +236,19 @@ def test_pilot_f001_fix_is_neutral():
         if expected != generic_diff_fixed(a, b):
             differing += 1
     assert differing == 0
+
+
+def test_pilot_nan_identity(engine):
+    """NaN != NaN, but [NaN] == [NaN] and {"x": NaN} == {"x": NaN} (findings F-008)."""
+    nan = float("nan")
+    rng = rng_for("pilot-nan")
+    shapes = [nan, [nan], {"z": nan}, [1, nan], {"a": [nan, {"b": nan}]}, [[nan]], "s", 1, 1.0, [1.0]]
+    cases = []
+    for _ in range(scaled(2000)):
+        a = [rng.choice(shapes) for _ in range(rng.randint(0, 6))]
+        b = [rng.choice(shapes) for _ in range(rng.randint(0, 6))]
+        cases.append({"a": a, "b": b})
+        cases.append({"a": {"k": rng.choice(shapes), "m": a}, "b": {"k": rng.choice(shapes), "m": b}})
+    check_parity(engine, "diff", cases, o_diff, min_cases=scaled(4000))
+    bf = [{"a": c["a"], "b": c["b"]} for c in cases if isinstance(c["a"], list)]
+    check_parity(engine, "diff_sequence_bruteforce", bf, o_bruteforce, min_cases=scaled(2000))

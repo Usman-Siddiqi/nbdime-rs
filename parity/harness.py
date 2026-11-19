@@ -97,11 +97,15 @@ def check_parity(engine, fn, cases, oracle, min_cases, show=5, compare=None, max
     failures = []
     agreed_errors = 0
     for case, (ok, got) in zip(cases, results):
+        # The oracle sees the arguments exactly as the engine does: decoded by json.loads from
+        # the request text. This matters beyond types: CPython's json returns one shared NaN
+        # object, and container equality short-circuits on identity (findings F-008).
+        oracle_case = json.loads(json.dumps(case, allow_nan=True))
         if not ok and got.startswith("unknown function"):
             failures.append((case, "(any result)", "ERROR " + got))
             continue
         try:
-            expected = oracle(**case)
+            expected = oracle(**oracle_case)
             oracle_ok = True
         except Exception as e:  # the oracle's own failure is part of its behavior
             expected = "%s: %s" % (type(e).__name__, e)

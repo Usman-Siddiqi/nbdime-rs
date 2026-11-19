@@ -93,3 +93,20 @@ def test_splitlines(engine):
     cases = [{"s": multiline_text(rng)} for _ in range(scaled(3000))]
     cases += [{"s": s} for s in ["", "\n", "\r\n", "\r\r\n\n", "a\x1c\x1d\x1eb", "\x85  ", "no end"]]
     check_parity(engine, "splitlines", cases, lambda s: s.splitlines(True), min_cases=scaled(3000))
+
+
+def test_json_integer_digit_limit(engine):
+    """Python refuses ints longer than 4300 digits (findings F-010)."""
+    cases = [{"text": "[%s]" % ("1" * n), "options": {}} for n in (4299, 4300, 4301, 5000)]
+    cases.append({"text": "-" + "9" * 4300, "options": {}})
+    cases.append({"text": "-" + "9" * 4301, "options": {}})
+    check_parity(engine, "json.loads_dumps", cases, oracle_loads_dumps, min_cases=6, max_error_fraction=1.0)
+
+
+def test_json_lone_surrogates_are_rejected(engine):
+    """Deliberate deviation F-005: Python keeps lone surrogates; nbdime-rs refuses the input."""
+    texts = ['"\\ud800"', '["\\udc00"]', '{"\\udbff": 1}', '"a\\ud800\\u0041"']
+    results = engine.call_many("json.loads_dumps", [{"text": t, "options": {}} for t in texts])
+    assert all(not ok for ok, _ in results), results
+    paired = engine.call("json.loads_dumps", {"text": '"\\ud83d\\ude00"', "options": {}})
+    assert paired == (True, '"\\ud83d\\ude00"')

@@ -39,6 +39,19 @@ anything requires explicit approval from the project owner (see CLAUDE.md).
 - **Decision**: pending. Probably replicate for byte parity of `nbmerge` output and record, since
   it only affects the builtin renderer (used when git is unavailable). Revisit in Phase 2.
 
+### F-006: `bruteforce_compute_snakes` never merges consecutive pairs
+- **What**: while building snakes from the LCS index pairs, upstream extends the last snake when
+  `snakes[-1][0] == i and snakes[-1][1] == j`, comparing the snake's *start* with the new pair
+  instead of its end. Only a pair at (0, 0) of the rectangle ever extends a snake; every other
+  pair becomes a snake of length 1.
+- **Evidence**: `compute_snakes_multilevel(["a","bb"], ["a","bc"], [first_letter_eq, eq])` returns
+  `[(0, 0, 1), (1, 1, 1)]`; the parity case in `test_pilot_snakes_multilevel_lines` observes the
+  unmerged runs (`[5,6,1],[6,7,9]` where `[5,6,10]` would be the merged form).
+- **Impact**: none on diffs, since `compute_diff_from_snakes` treats contiguous snakes exactly
+  like one long snake. Only the snake list itself differs from what the comments promise.
+- **Decision**: replicated, because the parity suite compares the snake list. Harmless; not worth
+  reporting upstream on its own.
+
 ## Nondeterminism in upstream
 
 ### F-003: random cell ids on read (nbformat >= 4.5)

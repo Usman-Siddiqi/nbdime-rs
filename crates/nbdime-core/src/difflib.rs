@@ -4,40 +4,10 @@
 //! tie-breaking between equally long matches.
 
 use std::cell::OnceCell;
+use std::cmp::Ordering;
 use std::collections::HashMap;
-use std::hash::{BuildHasherDefault, Hash, Hasher};
+use std::hash::Hash;
 use std::ops::Range;
-
-/// Multiplicative hasher for the small, trusted element types of a sequence index (the default
-/// SipHash dominates the cost of comparing short strings).
-#[derive(Default)]
-struct FastHasher(u64);
-
-impl Hasher for FastHasher {
-    fn finish(&self) -> u64 {
-        self.0
-    }
-
-    fn write(&mut self, bytes: &[u8]) {
-        for &b in bytes {
-            self.write_u64(u64::from(b));
-        }
-    }
-
-    fn write_u32(&mut self, i: u32) {
-        self.write_u64(u64::from(i));
-    }
-
-    fn write_u64(&mut self, i: u64) {
-        self.0 = (self.0.rotate_left(5) ^ i).wrapping_mul(0x517c_c1b7_2722_0a95);
-    }
-
-    fn write_usize(&mut self, i: usize) {
-        self.write_u64(i as u64);
-    }
-}
-
-type FastMap<K, V> = HashMap<K, V, BuildHasherDefault<FastHasher>>;
 
 /// A block of equal elements: `a[a..a + size] == b[b..b + size]`.
 ///
@@ -92,7 +62,7 @@ pub fn real_quick_ratio(len_a: usize, len_b: usize) -> f64 {
 
 /// `SequenceMatcher.quick_ratio`: an upper bound on the ratio from element counts alone.
 pub fn quick_ratio<T: Eq + Hash>(a: &[T], b: &[T]) -> f64 {
-    let mut available: FastMap<&T, isize> = FastMap::default();
+    let mut available: HashMap<&T, isize> = HashMap::new();
     for x in b {
         *available.entry(x).or_insert(0) += 1;
     }
@@ -108,6 +78,44 @@ pub fn quick_ratio<T: Eq + Hash>(a: &[T], b: &[T]) -> f64 {
     calculate_ratio(matches, a.len() + b.len())
 }
 
+/// [`quick_ratio`] of two sequences that are already sorted, which needs no hashing.
+pub fn quick_ratio_sorted<T: Ord>(a_sorted: &[T], b_sorted: &[T]) -> f64 {
+    let (mut i, mut j, mut matches) = (0, 0, 0);
+    while i < a_sorted.len() && j < b_sorted.len() {
+        match a_sorted[i].cmp(&b_sorted[j]) {
+            Ordering::Less => i += 1,
+            Ordering::Greater => j += 1,
+            Ordering::Equal => {
+                matches += 1;
+                i += 1;
+                j += 1;
+            }
+        }
+    }
+    calculate_ratio(matches, a_sorted.len() + b_sorted.len())
+}
+
+/// Positions of each element in a sequence: the part of a [`SequenceMatcher`] that depends on
+/// `b` alone, which can be built once and shared by matchers with the same `b`.
+///
+/// Uses the standard randomly seeded hasher, as the elements may come from untrusted input.
+pub struct PositionIndex<T>(HashMap<T, Vec<usize>>);
+
+impl<T: Eq + Hash + Clone> PositionIndex<T> {
+    pub fn new(sequence: &[T]) -> Self {
+        let mut positions: HashMap<T, Vec<usize>> = HashMap::new();
+        for (j, elt) in sequence.iter().enumerate() {
+            positions.entry(elt.clone()).or_default().push(j);
+        }
+        PositionIndex(positions)
+    }
+
+    /// Ascending positions of `elt`.
+    fn get(&self, elt: &T) -> Option<&[usize]> {
+        self.0.get(elt).map(Vec::as_slice)
+    }
+}
+
 /// Compares two sequences of hashable elements.
 ///
 /// The index of `b` is built lazily, so [`SequenceMatcher::real_quick_ratio`] and
@@ -115,29 +123,33 @@ pub fn quick_ratio<T: Eq + Hash>(a: &[T], b: &[T]) -> f64 {
 pub struct SequenceMatcher<'a, T> {
     a: &'a [T],
     b: &'a [T],
-    b2j: OnceCell<FastMap<&'a T, Vec<usize>>>,
+    shared_index: Option<&'a PositionIndex<T>>,
+    own_index: OnceCell<PositionIndex<T>>,
     matching_blocks: OnceCell<Vec<Match>>,
 }
 
-impl<'a, T: Eq + Hash> SequenceMatcher<'a, T> {
+impl<'a, T: Eq + Hash + Clone> SequenceMatcher<'a, T> {
     pub fn new(a: &'a [T], b: &'a [T]) -> Self {
         SequenceMatcher {
             a,
             b,
-            b2j: OnceCell::new(),
+            shared_index: None,
+            own_index: OnceCell::new(),
             matching_blocks: OnceCell::new(),
         }
     }
 
-    /// Element of `b` -> ascending positions in `b`.
-    fn b2j(&self) -> &FastMap<&'a T, Vec<usize>> {
-        self.b2j.get_or_init(|| {
-            let mut b2j: FastMap<&T, Vec<usize>> = FastMap::default();
-            for (j, elt) in self.b.iter().enumerate() {
-                b2j.entry(elt).or_default().push(j);
-            }
-            b2j
-        })
+    /// A matcher that uses a prebuilt index of `b`.
+    pub fn with_index(a: &'a [T], b: &'a [T], index: &'a PositionIndex<T>) -> Self {
+        SequenceMatcher {
+            shared_index: Some(index),
+            ..Self::new(a, b)
+        }
+    }
+
+    fn index(&self) -> &PositionIndex<T> {
+        self.shared_index
+            .unwrap_or_else(|| self.own_index.get_or_init(|| PositionIndex::new(self.b)))
     }
 
     /// The longest match in `a[alo..ahi]` and `b[blo..bhi]`.
@@ -156,7 +168,7 @@ impl<'a, T: Eq + Hash> SequenceMatcher<'a, T> {
         blo: usize,
         bhi: usize,
     ) -> Match {
-        let b2j = self.b2j();
+        let index = self.index();
         let mut best = Match {
             a: alo,
             b: blo,
@@ -165,7 +177,7 @@ impl<'a, T: Eq + Hash> SequenceMatcher<'a, T> {
         // Without junk or popular elements the best block can never be extended on either side,
         // so the extension loops of the original are omitted.
         for i in alo..ahi {
-            if let Some(js) = b2j.get(&self.a[i]) {
+            if let Some(js) = index.get(&self.a[i]) {
                 let start = js.partition_point(|&j| j < blo);
                 for &j in js[start..].iter().take_while(|&&j| j < bhi) {
                     // `prev[j]` holds the length of the match ending at `a[i - 1]` and `b[j - 1]`.
@@ -432,6 +444,30 @@ mod tests {
         let (a, b) = (chars("aaab"), chars("abbb"));
         // a: min(3, 1) = 1, b: min(1, 3) = 1.
         assert_eq!(quick_ratio(&a, &b), 2.0 * 2.0 / 8.0);
+    }
+
+    #[test]
+    fn sorted_quick_ratio_agrees_with_hashed() {
+        let sorted = |s: &str| {
+            let mut v = chars(s);
+            v.sort_unstable();
+            v
+        };
+        for (x, y) in [("aaab", "abbb"), ("", ""), ("abc", ""), ("hello", "world")] {
+            assert_eq!(
+                quick_ratio_sorted(&sorted(x), &sorted(y)),
+                quick_ratio(&chars(x), &chars(y))
+            );
+        }
+    }
+
+    #[test]
+    fn shared_index_gives_the_same_matches() {
+        let (a, b) = (chars("qabxcd"), chars("abycdf"));
+        let index = PositionIndex::new(&b);
+        let shared = SequenceMatcher::with_index(&a, &b, &index);
+        let own = SequenceMatcher::new(&a, &b);
+        assert_eq!(shared.matching_blocks(), own.matching_blocks());
     }
 
     #[test]

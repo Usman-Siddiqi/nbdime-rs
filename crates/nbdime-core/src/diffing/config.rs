@@ -6,7 +6,8 @@ use std::collections::HashMap;
 use crate::diff_format::Diff;
 use crate::value::Value;
 
-use super::generic::{compare_strings_approximate, diff_values};
+use super::approximate::compare_strings_approximate;
+use super::generic::diff_values;
 use super::strings::diff_strings_by_char;
 use super::DiffError;
 

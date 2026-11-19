@@ -2,8 +2,6 @@
 
 use crate::diff_format::{validate_diff, Diff, MappingDiffBuilder, SequenceDiffBuilder};
 use crate::diff_utils::count_consumed_symbols;
-use crate::difflib::{self, SequenceMatcher};
-use crate::py::py_len;
 use crate::value::{Map, Value};
 
 use super::config::{join_path, DiffConfig};
@@ -11,38 +9,6 @@ use super::sequence::diff_sequence_bruteforce;
 use super::snakes::{compute_diff_from_snakes, compute_snakes_multilevel, Compare};
 use super::strings::diff_strings_linewise;
 use super::{DiffError, MAX_DIFF_DEPTH};
-
-/// Whether two strings are similar enough to be considered the same item.
-///
-/// Empty versus non-empty never matches and equal strings always do. Otherwise the cheap upper
-/// bounds on the difflib ratio are checked against `threshold` before the full ratio, which must
-/// then be strictly greater. With `maxlen`, strings that are both longer are only accepted when
-/// equal.
-pub fn compare_strings_approximate(
-    x: &str,
-    y: &str,
-    threshold: f64,
-    maxlen: Option<usize>,
-) -> bool {
-    if x.is_empty() != y.is_empty() {
-        return false;
-    }
-    if x == y {
-        return true;
-    }
-    let (len_x, len_y) = (py_len(x), py_len(y));
-    if difflib::real_quick_ratio(len_x, len_y) < threshold {
-        return false;
-    }
-    if maxlen.is_some_and(|maxlen| len_x > maxlen && len_y > maxlen) {
-        return false;
-    }
-    let (x, y): (Vec<char>, Vec<char>) = (x.chars().collect(), y.chars().collect());
-    if difflib::quick_ratio(&x, &y) < threshold {
-        return false;
-    }
-    SequenceMatcher::new(&x, &y).ratio() > threshold
-}
 
 /// `nbdime.diff(a, b)` with the default configuration.
 pub fn diff(a: &Value, b: &Value) -> Result<Diff, DiffError> {
@@ -147,7 +113,11 @@ fn diff_sequence_multilevel(
         .collect();
     let compares: Vec<Compare<Value>> = closures.iter().map(|c| c as Compare<Value>).collect();
     let snakes = compute_snakes_multilevel(a, b, &compares);
-    compute_diff_from_snakes(a, b, &snakes, path, config)
+    let subpath = join_path(path, "*");
+    let differ = config.differ(&subpath);
+    compute_diff_from_snakes(a, b, &snakes, Value::clone, |x, y| {
+        differ.apply(x, y, &subpath, config)
+    })
 }
 
 /// Diff of two dicts: removed keys, changed values and added keys, sorted by key.
@@ -206,32 +176,6 @@ mod tests {
     fn diff_json(a: &str, b: &str) -> String {
         let d = diff(&parse(a).unwrap(), &parse(b).unwrap()).unwrap();
         dumps(&diff_to_value(&d), &DumpOptions::compact())
-    }
-
-    #[test]
-    fn approximate_comparison_rules() {
-        assert!(!compare_strings_approximate("", "x", 0.7, None));
-        assert!(compare_strings_approximate("", "", 0.7, None));
-        assert!(compare_strings_approximate("abc", "abc", 1.0, Some(0)));
-        // ratio("ab", "ac") is exactly 0.5: passes the bounds, fails the strict final test.
-        assert!(!compare_strings_approximate("ab", "ac", 0.5, None));
-        assert!(compare_strings_approximate("ab", "ac", 0.4, None));
-        // maxlen rejects long non-identical strings even when similar.
-        assert!(compare_strings_approximate(
-            "abcdefgh", "abcdefgx", 0.7, None
-        ));
-        assert!(!compare_strings_approximate(
-            "abcdefgh",
-            "abcdefgx",
-            0.7,
-            Some(5)
-        ));
-        assert!(compare_strings_approximate(
-            "abcdefgh",
-            "abcdefgx",
-            0.7,
-            Some(8)
-        ));
     }
 
     #[test]

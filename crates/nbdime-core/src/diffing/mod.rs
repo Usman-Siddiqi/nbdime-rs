@@ -1,5 +1,6 @@
 //! The generic diff engine: sequence alignment, string diffs and the recursive JSON diff.
 
+mod approximate;
 pub mod config;
 pub mod generic;
 pub mod sequence;
@@ -8,8 +9,9 @@ pub mod strings;
 
 use crate::diff_format::DiffFormatError;
 
+pub use approximate::compare_strings_approximate;
 pub use config::{DiffConfig, Differ, Predicate};
-pub use generic::{compare_strings_approximate, diff, diff_with_config};
+pub use generic::{diff, diff_with_config};
 pub use strings::{diff_strings_by_char, diff_strings_linewise};
 
 /// Deepest nesting of lists and dicts that [`diff`] accepts. The recursion over nested values

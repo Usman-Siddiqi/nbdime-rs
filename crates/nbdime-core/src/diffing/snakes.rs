@@ -4,9 +4,7 @@
 use crate::diff_format::{Diff, SequenceDiffBuilder};
 use crate::value::Value;
 
-use super::config::{join_path, DiffConfig};
 use super::sequence::lcs_indices;
-use super::DiffError;
 
 /// `n` consecutive items starting at `a[i]` and `b[j]` that are aligned with each other.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -116,18 +114,16 @@ fn multilevel<T>(
     merged
 }
 
-/// Converts snakes to a diff, recursing into each aligned pair with the differ configured for
-/// `path/*`. Unlike `diff_lists` there is no atomicity check on the aligned items.
-pub fn compute_diff_from_snakes(
-    a: &[Value],
-    b: &[Value],
+/// Converts snakes to a diff: the items between snakes are removed and added (`to_value` makes
+/// the added items), and every aligned pair becomes a `patch` of `diff_pair`'s result when that
+/// is not empty.
+pub fn compute_diff_from_snakes<T, E>(
+    a: &[T],
+    b: &[T],
     snakes: &[Snake],
-    path: &str,
-    config: &DiffConfig,
-) -> Result<Diff, DiffError> {
-    let subpath = join_path(path, "*");
-    let differ = config.differ(&subpath);
-
+    to_value: impl Fn(&T) -> Value,
+    mut diff_pair: impl FnMut(&T, &T) -> Result<Diff, E>,
+) -> Result<Diff, E> {
     let mut di = SequenceDiffBuilder::new();
     let (mut i0, mut j0) = (0, 0);
     let closing = Snake {
@@ -141,11 +137,10 @@ pub fn compute_diff_from_snakes(
             di.removerange(i0, i - i0);
         }
         if j > j0 {
-            di.addrange(i0, Value::List(b[j0..j].to_vec()));
+            di.addrange(i0, Value::List(b[j0..j].iter().map(&to_value).collect()));
         }
         for k in 0..n {
-            let cd = differ.apply(&a[i + k], &b[j + k], &subpath, config)?;
-            di.patch(i + k, cd);
+            di.patch(i + k, diff_pair(&a[i + k], &b[j + k])?);
         }
         i0 = i + n;
         j0 = j + n;
@@ -155,6 +150,7 @@ pub fn compute_diff_from_snakes(
 
 #[cfg(test)]
 mod tests {
+    use super::super::strings::diff_strings_by_char;
     use super::*;
 
     fn snakes<'a>(
@@ -210,21 +206,17 @@ mod tests {
 
     #[test]
     fn diff_from_snakes_patches_aligned_pairs() {
-        let a = [Value::from("ab\n"), Value::from("x\n")];
-        let b = [
-            Value::from("ac\n"),
-            Value::from("x\n"),
-            Value::from("new\n"),
-        ];
-        let config = DiffConfig::new(
-            vec![
-                super::super::Predicate::StringsApproximate,
-                super::super::Predicate::Eq,
-            ],
-            super::super::Differ::StringsByChar,
-        );
+        let a = ["ab\n", "x\n"];
+        let b = ["ac\n", "x\n", "new\n"];
         let s = [Snake { i: 0, j: 0, n: 1 }, Snake { i: 1, j: 1, n: 1 }];
-        let d = compute_diff_from_snakes(&a, &b, &s, "", &config).unwrap();
+        let d = compute_diff_from_snakes(
+            &a,
+            &b,
+            &s,
+            |line| Value::from(*line),
+            |x, y| Ok::<_, std::convert::Infallible>(diff_strings_by_char(x, y)),
+        )
+        .unwrap();
         assert_eq!(d.len(), 2);
         assert_eq!(d[0].key.as_index(), Some(0));
         assert_eq!(d[1].key.as_index(), Some(2));

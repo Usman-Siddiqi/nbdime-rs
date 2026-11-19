@@ -1,12 +1,14 @@
 //! Diffs of strings, by character and by line.
 
+use std::convert::Infallible;
+
 use crate::diff_format::{Diff, SequenceDiffBuilder};
 use crate::difflib::{SequenceMatcher, Tag};
 use crate::py::splitlines_keepends;
 use crate::value::Value;
 
-use super::config::{DiffConfig, Differ, Predicate};
-use super::generic::diff_lists;
+use super::approximate::PreparedStr;
+use super::snakes::{compute_diff_from_snakes, compute_snakes_multilevel};
 
 /// Character diff of two strings, indexed by code point. `addrange` values are strings.
 pub fn diff_strings_by_char(a: &str, b: &str) -> Diff {
@@ -15,8 +17,15 @@ pub fn diff_strings_by_char(a: &str, b: &str) -> Diff {
     }
     let a: Vec<char> = a.chars().collect();
     let b: Vec<char> = b.chars().collect();
+    diff_chars(&a, &b)
+}
+
+fn diff_chars(a: &[char], b: &[char]) -> Diff {
+    if a == b {
+        return Vec::new();
+    }
     let mut di = SequenceDiffBuilder::new();
-    for op in SequenceMatcher::new(&a, &b).opcodes() {
+    for op in SequenceMatcher::new(a, b).opcodes() {
         let inserted = || Value::Str(b[op.b.clone()].iter().collect());
         match op.tag {
             Tag::Equal => {}
@@ -31,24 +40,31 @@ pub fn diff_strings_by_char(a: &str, b: &str) -> Diff {
     di.validated()
 }
 
+fn prepared_lines(s: &str) -> Vec<PreparedStr<'_>> {
+    splitlines_keepends(s)
+        .into_iter()
+        .map(PreparedStr::new)
+        .collect()
+}
+
 /// Line diff of two strings; lines are split like `str.splitlines(True)`, aligned approximately
 /// and then diffed by character.
 pub fn diff_strings_linewise(a: &str, b: &str) -> Diff {
     if a == b {
         return Vec::new();
     }
-    let lines = |s: &str| -> Vec<Value> {
-        splitlines_keepends(s)
-            .into_iter()
-            .map(Value::from)
-            .collect()
-    };
-    let config = DiffConfig::new(
-        vec![Predicate::StringsApproximate, Predicate::Eq],
-        Differ::StringsByChar,
-    );
-    diff_lists(&lines(a), &lines(b), "", &config)
-        .expect("the line-diff configuration only diffs strings")
+    let (a, b) = (prepared_lines(a), prepared_lines(b));
+    let approximate = |x: &PreparedStr, y: &PreparedStr| x.is_similar(y, 0.7, None);
+    let equal = |x: &PreparedStr, y: &PreparedStr| x.text() == y.text();
+    let snakes = compute_snakes_multilevel(&a, &b, &[&approximate, &equal]);
+    compute_diff_from_snakes(
+        &a,
+        &b,
+        &snakes,
+        |line| Value::from(line.text()),
+        |x, y| Ok::<_, Infallible>(diff_chars(x.chars(), y.chars())),
+    )
+    .unwrap_or_else(|never| match never {})
 }
 
 #[cfg(test)]

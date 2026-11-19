@@ -93,13 +93,32 @@ anything requires explicit approval from the project owner (see CLAUDE.md).
 ### F-009: nesting depth
 - Upstream's recursive diff raises `RecursionError` at a few hundred levels of nesting (Python's
   default recursion limit is 1000 frames, several frames per level); `json.loads` accepts 9998.
-- **Decision**: nbdime-rs diffs up to `MAX_DIFF_DEPTH` levels and returns an error beyond it,
-  instead of overflowing the stack (which aborts the process). Between upstream's limit and ours
-  we succeed where upstream raises; deliberate.
+- **Decision**: nbdime-rs diffs up to `MAX_DIFF_DEPTH` (500) levels and returns an error beyond
+  it, instead of overflowing the stack (which aborts the process). Upstream raises between 400 and
+  500 levels, so we succeed slightly further; deliberate. The default configuration fits 500
+  levels on a 2 MB stack in debug builds. A custom configuration with multilevel predicates at
+  every nesting level needs more stack (overflow at about 450 levels on 2 MB in debug; fine in
+  release); the CLI and bindings run the engine on a large-stack thread.
 
 ### F-010: integer digit limit
 - Python 3.11+ refuses to parse integers with more than 4300 digits (`ValueError`), so
   `json.loads`/`nbformat.read` fail on such files. nbdime-rs reproduces the error.
+
+### F-011: the approximate string predicate is defined on str/str and list/list only
+- **What**: upstream's `compare_strings_approximate` is duck-typed: it works on any operands
+  with `len()`, `==` and hashable iteration, so with a custom config it compares a str with a
+  list, or iterates dicts by key, and raises `TypeError`/`KeyError` in some cases and not others
+  (it hashes `y` eagerly, `x` lazily; a full-grid LCS evaluates every pair).
+- **Where it matters**: nowhere in nbdime itself. nbdime applies this predicate only to lines of
+  strings (and the notebook predicates join text before calling it). Only a user-supplied
+  `DiffConfig` that puts it on arbitrary JSON can reach the other cases.
+- **Decision**: nbdime-rs supports str/str and list/list operands with upstream's results, and
+  returns an error for other operand types. Because nbdime-rs strips a common suffix before the
+  LCS and checks length ratios before hashing, some of upstream's errors in these unsupported
+  configurations become results instead. The Python integration only uses the engine for
+  configurations it can express, so this is never visible through nbdime.
+- **Review trail**: raised as major by the P1 sign-off re-review; downgraded by the orchestrator
+  because no nbdime configuration reaches it.
 
 ## Open questions
 

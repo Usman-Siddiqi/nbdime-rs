@@ -15,8 +15,8 @@ pub use generic::{diff, diff_with_config};
 pub use strings::{diff_strings_by_char, diff_strings_linewise};
 
 /// Deepest nesting of lists and dicts that [`diff`] accepts. The recursion over nested values
-/// uses native stack, so it is bounded rather than left to the input (Python's own recursion limit
-/// stops upstream's diff at a similar depth).
+/// uses native stack, so it is bounded rather than left to the input. Upstream hits Python's
+/// recursion limit somewhere between 400 and 500 levels, so this accepts slightly more.
 pub const MAX_DIFF_DEPTH: usize = 500;
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]

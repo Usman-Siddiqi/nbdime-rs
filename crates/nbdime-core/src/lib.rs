@@ -6,6 +6,7 @@
 
 pub mod diff_format;
 pub mod diff_utils;
+pub mod diffing;
 pub mod difflib;
 pub mod json;
 pub mod py;

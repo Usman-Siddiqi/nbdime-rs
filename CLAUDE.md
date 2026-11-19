@@ -22,6 +22,12 @@ nbdime-rs is a Rust port of [nbdime](https://github.com/jupyter/nbdime) (Jupyter
 and merge). Goal: a drop-in replacement for the terminal and git workflows that is dramatically
 faster, plus an optional accelerated engine that upstream nbdime can use.
 
+## Autonomy (owner instruction, 2026-11-19)
+Proceed through Phases 2 to 4 without checking in. Make reasonable calls, and log them in
+`docs/findings.md` and `docs/progress.md`. Stop only for anything touching other repositories
+(hard rule above), true blockers, and the end of Phase 5 before any upstream action. Work on
+`main` and push frequently.
+
 ## Start of every session
 Read, in order: `ROADMAP.md`, `docs/progress.md`, `docs/porting-guide.md`, `docs/findings.md`,
 `docs/design.md`. Continue from where `docs/progress.md` says things stand.

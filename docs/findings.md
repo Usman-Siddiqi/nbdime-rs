@@ -64,10 +64,9 @@ anything requires explicit approval from the project owner (see CLAUDE.md).
   random ids for notebooks declaring `nbformat_minor >= 5`.
 - **Impact**: upstream's diff of such a notebook against anything contains random ids; two runs
   differ.
-- **Decision (proposed)**: nbdime-rs fills missing/duplicate ids **deterministically** (stable
+- **Decision (approved 2026-11-19)**: nbdime-rs fills missing/duplicate ids **deterministically** (stable
   hash of cell position and content, same 8-hex-char shape). Parity cases with such inputs compare
-  modulo the generated ids (the harness substitutes ids it can map one-to-one). Needs owner
-  sign-off; see Q-001.
+  modulo the generated ids (the harness substitutes ids it can map one-to-one).
 
 ## Deliberate deviations
 
@@ -122,10 +121,10 @@ anything requires explicit approval from the project owner (see CLAUDE.md).
 
 ## Open questions
 
-- **Q-001**: accept deterministic ids (F-003)?
+- **Q-001** (decided): deterministic ids, see F-003.
 - **Q-002** (answered): `nbformat.read` rejects a UTF-8 BOM (`NotJSONError`, `nbdiff` exits 1
-  with a traceback). Proposed deviation: accept and ignore a BOM, since editors on Windows
-  sometimes add one. The JSON layer itself rejects it, like `json.loads`; the notebook reader
+  with a traceback). Decision (approved 2026-11-19): accept and ignore a leading BOM, since editors
+  on Windows sometimes add one (deliberate deviation). The JSON layer itself rejects it, like `json.loads`; the notebook reader
   (U02) decides.
 - **Q-003**: nbformat v3 and older inputs: port `nbformat.convert` upconversion, or shell out /
   reject with a clear error? Proposed: port v3→v4 conversion in Phase 2 (small, well specified).

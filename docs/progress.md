@@ -1,6 +1,6 @@
 # Progress log
 
-## Session 1 (2026-11-19, 21:49 to 23:10 UTC)
+## Session 1 (2026-11-19, 21:49 to 23:00 UTC)
 
 ### Done
 - **Phase 0.** Read upstream nbdime 4.0.4. Its own test suite runs green on the reference venv

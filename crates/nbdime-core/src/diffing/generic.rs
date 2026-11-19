@@ -71,8 +71,8 @@ pub(super) fn diff_lists(
     // Items consumed from `a` and `b` so far.
     let (mut i, mut j) = (0, 0);
     let mut di = SequenceDiffBuilder::new();
-    for entry in shallow.iter().map(Some).chain([None]) {
-        let (n, askip, bskip) = match entry {
+    for entry in shallow.into_iter().map(Some).chain([None]) {
+        let (n, askip, bskip) = match &entry {
             Some(e) => {
                 let index = e.key.as_index().expect("sequence diff has index keys");
                 let (askip, bskip) = count_consumed_symbols(e)?;
@@ -92,7 +92,7 @@ pub(super) fn diff_lists(
         i += n + askip;
         j += n + bskip;
         if let Some(e) = entry {
-            di.append(e.clone());
+            di.append(e);
         }
     }
     debug_assert_eq!((i, j), (a.len(), b.len()));
@@ -125,33 +125,32 @@ fn diff_dicts(a: &Map, b: &Map, path: &str, config: &DiffConfig) -> Result<Diff,
 
     // Keys are processed in sorted order for a deterministic diff (byte order of UTF-8 equals
     // Python's code point order).
-    let sorted_keys = |m: &Map, other: &Map, in_other: bool| -> Vec<String> {
-        let mut keys: Vec<String> = m
-            .keys()
-            .filter(|k| other.contains_key(*k) == in_other)
-            .cloned()
-            .collect();
-        keys.sort_unstable();
-        keys
-    };
+    let mut removed: Vec<_> = a.keys().filter(|k| !b.contains_key(*k)).collect();
+    let mut common: Vec<_> = a
+        .iter()
+        .filter_map(|(k, av)| Some((k, av, b.get(k)?)))
+        .collect();
+    let mut added: Vec<_> = b.iter().filter(|(k, _)| !a.contains_key(*k)).collect();
+    removed.sort_unstable();
+    common.sort_unstable_by_key(|&(k, _, _)| k);
+    added.sort_unstable_by_key(|&(k, _)| k);
 
-    for key in sorted_keys(a, b, false) {
-        di.remove(&key);
+    for key in removed {
+        di.remove(key);
     }
-    for key in sorted_keys(a, b, true) {
-        let (avalue, bvalue) = (&a[&key], &b[&key]);
-        let subpath = join_path(path, &key);
+    for (key, avalue, bvalue) in common {
+        let subpath = join_path(path, key);
         if avalue.same_type(bvalue) && !config.is_atomic(avalue, &subpath) {
             let dd = config
                 .differ(&subpath)
                 .apply(avalue, bvalue, &subpath, config)?;
-            di.patch(&key, dd);
+            di.patch(key, dd);
         } else if !avalue.py_eq(bvalue) {
-            di.replace(&key, bvalue.clone());
+            di.replace(key, bvalue.clone());
         }
     }
-    for key in sorted_keys(b, a, false) {
-        di.add(&key, b[&key].clone());
+    for (key, value) in added {
+        di.add(key, value.clone());
     }
     Ok(di.validated())
 }

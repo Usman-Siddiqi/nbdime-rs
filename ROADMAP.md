@@ -1,0 +1,71 @@
+# Roadmap
+
+Status legend: ✅ done · 🔄 in progress · ⏳ not started · ⛔ blocked
+
+Every unit's exit condition: compiles warning-free (fmt, clippy `-D warnings`), its parity suite
+passes with no skips and at least the stated case count, two hostile reviews signed off, merged by
+the orchestrator. Parity is measured against nbdime 4.0.4.
+
+## Phase 0: understand and design ✅
+- Read upstream (diffing, merging, patching, prettyprint, CLI, git integration, tests, packaging).
+- Reproduce and explain the scaling problem: `docs/upstream-performance.md`.
+- `docs/porting-guide.md`, `docs/design.md`, `docs/findings.md`, `CLAUDE.md`.
+
+## Phase 1: foundation and pilot 🔄
+| Unit | Owner | Status | Acceptance |
+|---|---|---|---|
+| F1 workspace, CI, license | orchestrator | 🔄 | `cargo build`, CI green |
+| F2 `Value`, Python equality, truthiness | orchestrator | 🔄 | unit tests incl. int/float/bool cross-equality |
+| F3 JSON parse/dump with Python semantics | orchestrator | 🔄 | parity: 10k random docs, float repr sample of 100k, byte-identical to `json.dumps` |
+| F4 diff format types + JSON | orchestrator | 🔄 | round-trips upstream test diffs byte for byte |
+| F5 parity harness + dev batch tool | orchestrator | 🔄 | runs, counts cases, rejects skips |
+| F6 benchmark harness | orchestrator | 🔄 | upstream timings reproducible from `bench/run.py` |
+| **P1 pilot: generic diff engine** | implementer loop | ⏳ | see below |
+
+**P1 pilot scope**: `difflib.SequenceMatcher` (matching blocks, opcodes, ratio, quick_ratio,
+real_quick_ratio), `diff_strings_by_char`, `diff_strings_linewise`, `compare_strings_approximate`,
+brute-force LCS, multilevel snakes, `diff_lists`, `diff_dicts`, generic `diff(a, b)` with the
+default config. Parity: `nbdime.diff` and the individual functions on ≥ 20,000 generated cases and
+all string fields of the upstream test notebooks, byte-identical JSON.
+
+## Phase 2: fan out the port ⏳
+| Unit | Depends on | Scope |
+|---|---|---|
+| U02 nbformat read/write | F3 | rejoin/split lines, strip transient, id policy (F-003), v3→v4 upconversion, `nbformat.write` formatting |
+| U03 notebook predicates | P1 | all `compare_*` predicates, precomputed per-cell data, exact results |
+| U04 `diff_notebooks` + ignore config | P1, U03 | differs, `diff_single_outputs`, mime bundles, attachments, targets/ignores |
+| U05 patch + diff utils | F4 | `patch`, `flatten_list_of_string_diff`, `to_json_patch` (if needed) |
+| U06 diff pretty-printer | U04 | `pretty_print_notebook_diff` byte parity incl. git `--color-words` rendering |
+| U07 `nbdiff` CLI | U04, U06 | flags, `--out`, gitref mode, exit codes |
+| U08 `nbshow` | U02 | flags and output |
+| U09 `nbpatch` | U05 | |
+| U10 merge decisions/chunks/apply | U05 | `MergeDecision`, `_sort_key`, `apply_decisions`, `make_merge_chunks` |
+| U11 generic merge | U10 | `_merge_dicts`, `_merge_lists`, `_merge_strings`, concurrent inserts |
+| U12 strategies + autoresolve | U11 | all conflict strategies, inline cells/source/outputs, record-conflict |
+| U13 notebook merge + `nbmerge` | U12, U02 | strategies from args, merge pretty-print, exit codes |
+| U14 git integration | U07, U13 | diff driver, merge driver, `nbdime config-git`, filters |
+| U15 Python package `nbdime_rs` | U04, U13 | PyO3 API per `docs/design.md`, wheels via maturin |
+
+## Phase 3: integration and parity ⏳
+Full upstream-derived test set through the harness, large differential runs (≥ 100k notebook
+pairs/triples), triage → fix → review loop until parity targets are met or remaining differences
+are documented deviations.
+
+## Phase 4: performance and polish ⏳
+Benchmarks vs upstream at 100 to 10,000 cells, profiling, algorithmic work that keeps parity,
+pip packaging, docs, README with charts from real runs.
+
+## Phase 5: upstream contribution prep (local only) ⏳
+Local nbdime clone, optional engine integration, tests with and without the engine,
+`docs/upstream/proposal.md`, `docs/upstream/pr-description.md`, skeptical-maintainer review, then
+stop and ask.
+
+## Parity status
+| Area | Status |
+|---|---|
+| JSON I/O | not measured yet |
+| Generic diff | not started |
+| Notebook diff | not started |
+| Patch | not started |
+| Merge | not started |
+| CLI output | not started |

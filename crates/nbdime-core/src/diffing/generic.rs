@@ -5,6 +5,7 @@ use crate::diff_utils::count_consumed_symbols;
 use crate::value::{Map, Value};
 
 use super::config::{join_path, DiffConfig};
+use super::predicates::Item;
 use super::sequence::try_diff_sequence_bruteforce;
 use super::snakes::{compute_diff_from_snakes, try_compute_snakes_multilevel};
 use super::strings::diff_strings_linewise;
@@ -63,7 +64,7 @@ pub(super) fn diff_lists(
     }
 
     let predicate = predicates[0];
-    let shallow = try_diff_sequence_bruteforce(a, b, |x, y| predicate.apply(x, y))?;
+    let shallow = try_diff_sequence_bruteforce(a, b, |x, y| predicate.compare(x, y, config))?;
 
     let subpath = join_path(path, "*");
     let differ = config.differ(&subpath);
@@ -100,23 +101,42 @@ pub(super) fn diff_lists(
 }
 
 /// Diff of two lists aligned with several predicates, loosest first.
-fn diff_sequence_multilevel(
+pub(super) fn diff_sequence_multilevel(
     a: &[Value],
     b: &[Value],
+    path: &str,
+    config: &DiffConfig,
+) -> Result<Diff, DiffError> {
+    let (a, b): (Vec<_>, Vec<_>) = (
+        a.iter().map(Item::new).collect(),
+        b.iter().map(Item::new).collect(),
+    );
+    diff_sequence_multilevel_items(&a, &b, path, config)
+}
+
+/// [`diff_sequence_multilevel`] on items that carry what the predicates derive from them, so
+/// that the derived data is computed once per item and not once per pair.
+pub(super) fn diff_sequence_multilevel_items<'a>(
+    a: &[Item<'a>],
+    b: &[Item<'a>],
     path: &str,
     config: &DiffConfig,
 ) -> Result<Diff, DiffError> {
     let predicates = config.predicates(root_if_empty(path));
     let compares: Vec<_> = predicates
         .iter()
-        .map(|&p| move |x: &Value, y: &Value| p.apply(x, y))
+        .map(|&p| move |x: &Item<'a>, y: &Item<'a>| p.apply(x, y, config))
         .collect();
     let snakes = try_compute_snakes_multilevel(a, b, &compares)?;
     let subpath = join_path(path, "*");
     let differ = config.differ(&subpath);
-    compute_diff_from_snakes(a, b, &snakes, Value::clone, |x, y| {
-        differ.apply(x, y, &subpath, config)
-    })
+    compute_diff_from_snakes(
+        a,
+        b,
+        &snakes,
+        |item| item.value().clone(),
+        |x, y| differ.apply(x.value(), y.value(), &subpath, config),
+    )
 }
 
 /// Diff of two dicts: removed keys, changed values and added keys, sorted by key.

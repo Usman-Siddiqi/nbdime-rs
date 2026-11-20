@@ -3,6 +3,8 @@
 mod approximate;
 pub mod config;
 pub mod generic;
+pub mod notebooks;
+mod predicates;
 pub mod sequence;
 pub mod snakes;
 pub mod strings;
@@ -12,6 +14,7 @@ use crate::diff_format::DiffFormatError;
 pub use approximate::compare_strings_approximate;
 pub use config::{DiffConfig, Differ, Predicate};
 pub use generic::{diff, diff_with_config};
+pub use notebooks::{diff_notebooks, NotebookDiffConfig, Targets};
 pub use strings::{diff_strings_by_char, diff_strings_linewise};
 
 /// Deepest nesting of lists and dicts that [`diff`] accepts. The recursion over nested values
@@ -31,6 +34,18 @@ pub enum DiffError {
     UnhashableItem,
     #[error("Arguments need to be string types.")]
     NotStrings,
+    #[error("Arguments need to be lists.")]
+    NotLists,
+    #[error("Expected inputs to be dicts.")]
+    NotDicts,
+    #[error("MIME bundles and attachments should be dictionaries.")]
+    NotBundles,
+    #[error("missing key {0:?}")]
+    MissingKey(String),
+    #[error("{0}")]
+    Type(String),
+    #[error("Invalid ignore config entry: {0}")]
+    InvalidIgnore(String),
     #[error("invalid diff: {0}")]
     InvalidDiff(#[from] DiffFormatError),
 }

@@ -38,6 +38,15 @@ impl<'a> PreparedStr<'a> {
         self.text
     }
 
+    /// Length in code points.
+    pub(super) fn len(&self) -> usize {
+        self.len
+    }
+
+    pub(super) fn is_empty(&self) -> bool {
+        self.text.is_empty()
+    }
+
     pub(super) fn chars(&self) -> &[char] {
         self.chars.get_or_init(|| self.text.chars().collect())
     }
@@ -100,15 +109,19 @@ pub fn compare_strings_approximate(
 /// The `strings_approximate` predicate as upstream applies it to two arbitrary values: the
 /// operands are strings or lists (compared item by item), and anything else is a `TypeError`
 /// there, so it is an error here.
-pub(super) fn compare_values_approximate(x: &Value, y: &Value) -> Result<bool, DiffError> {
+pub(super) fn compare_values_approximate(
+    x: &Value,
+    y: &Value,
+    maxlen: Option<usize>,
+) -> Result<bool, DiffError> {
     // Upstream tests `bool(x) != bool(y)` first, so operands that differ in truthiness never
     // reach the type error.
     if x.truthy() != y.truthy() {
         return Ok(false);
     }
     match (x, y) {
-        (Value::Str(x), Value::Str(y)) => Ok(compare_strings_approximate(x, y, THRESHOLD, None)),
-        (Value::List(x), Value::List(y)) => compare_lists_approximate(x, y),
+        (Value::Str(x), Value::Str(y)) => Ok(compare_strings_approximate(x, y, THRESHOLD, maxlen)),
+        (Value::List(x), Value::List(y)) => compare_lists_approximate(x, y, maxlen),
         _ => Err(DiffError::ApproximateOperands),
     }
 }
@@ -122,7 +135,11 @@ fn hashable_items(items: &[Value]) -> Result<Vec<Hashable<'_>>, DiffError> {
 
 /// `compare_strings_approximate` on two non-empty lists, the items taking the place of the
 /// characters. Items must be hashable, as upstream hashes them to count occurrences.
-fn compare_lists_approximate(x: &[Value], y: &[Value]) -> Result<bool, DiffError> {
+fn compare_lists_approximate(
+    x: &[Value],
+    y: &[Value],
+    maxlen: Option<usize>,
+) -> Result<bool, DiffError> {
     if x.len() == y.len() && x.iter().zip(y).all(|(p, q)| p.py_eq_item(q)) {
         return Ok(true);
     }
@@ -131,6 +148,9 @@ fn compare_lists_approximate(x: &[Value], y: &[Value]) -> Result<bool, DiffError
     }
     let (x, y) = (hashable_items(x)?, hashable_items(y)?);
     if quick_ratio(&x, &y) < THRESHOLD {
+        return Ok(false);
+    }
+    if maxlen.is_some_and(|maxlen| x.len() > maxlen && y.len() > maxlen) {
         return Ok(false);
     }
     Ok(SequenceMatcher::new(&x, &y).ratio() > THRESHOLD)
@@ -142,7 +162,7 @@ mod tests {
     use crate::json::parse;
 
     fn approx(x: &str, y: &str) -> Result<bool, DiffError> {
-        compare_values_approximate(&parse(x).unwrap(), &parse(y).unwrap())
+        compare_values_approximate(&parse(x).unwrap(), &parse(y).unwrap(), None)
     }
 
     #[test]
@@ -209,6 +229,17 @@ mod tests {
         // 1, 1.0 and true are one item, so the lists are equal.
         assert_eq!(approx("[1, 1.0, true]", "[true, 1, 1.0]"), Ok(true));
         assert_eq!(approx("[NaN, 1]", "[NaN, 1]"), Ok(true));
+    }
+
+    #[test]
+    fn maxlen_applies_to_lists_after_the_cheap_bounds() {
+        let (x, y) = (
+            parse(r#"["a","b","c","d"]"#).unwrap(),
+            parse(r#"["a","b","c","e"]"#).unwrap(),
+        );
+        assert_eq!(compare_values_approximate(&x, &y, Some(3)), Ok(false));
+        assert_eq!(compare_values_approximate(&x, &y, Some(4)), Ok(true));
+        assert_eq!(compare_values_approximate(&x, &x, Some(0)), Ok(true));
     }
 
     #[test]

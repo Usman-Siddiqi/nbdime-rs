@@ -105,7 +105,8 @@ anything requires explicit approval from the project owner (see CLAUDE.md).
     malformed item there can avoid an error that upstream raises.
   - Whether outputs align is decided from the alignment alone (`compare_outputs_approximate`):
     the diffs of aligned output pairs, which upstream computes and discards, are not computed.
-    Those can only raise for shapes outside nbformat's schema, so the engine may return a
+    Those can only raise for shapes outside nbformat's schema (or nesting beyond Python's recursion
+    limit, F-009), so the engine may return a
     result where upstream raises.
   - Identical notebooks with list sources, which upstream diffs without error, are an error
     here ("text operands must be strings").

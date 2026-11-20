@@ -9,7 +9,7 @@
 //! deterministically (F-003), a leading BOM is ignored (Q-002), notebooks that are not nbformat 4
 //! are rejected (F-012), and schema violations are neither detected nor logged (F-013).
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crate::json::{self, DumpOptions, ParseError};
 use crate::py::splitlines_keepends;
@@ -19,11 +19,8 @@ use crate::value::{Int, Map, Value};
 pub enum NbformatError {
     #[error("notebook is not valid JSON: {0}")]
     Json(ParseError),
-    #[error(
-        "unsupported notebook format ({found}): only nbformat 4 notebooks are supported; \
-         upgrade older notebooks first, for example with `jupyter nbconvert --to notebook`"
-    )]
-    UnsupportedVersion { found: String },
+    #[error("unsupported notebook format ({found}): {hint}")]
+    UnsupportedVersion { found: String, hint: &'static str },
     #[error("invalid notebook: {0}")]
     Invalid(String),
 }
@@ -38,6 +35,14 @@ fn invalid(message: impl Into<String>) -> NbformatError {
     NbformatError::Invalid(message.into())
 }
 
+/// Adds the cell index to an error from deeper in the cell.
+fn in_cell(index: usize) -> impl Fn(NbformatError) -> NbformatError {
+    move |error| match error {
+        NbformatError::Invalid(message) => invalid(format!("cell {index}: {message}")),
+        other => other,
+    }
+}
+
 /// `nbformat.reads(text, as_version=4)`.
 pub fn reads(text: &str) -> Result<Value, NbformatError> {
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
@@ -46,7 +51,7 @@ pub fn reads(text: &str) -> Result<Value, NbformatError> {
     let map = object_mut(&mut nb, "notebook")?;
     rejoin_lines(map)?;
     strip_transient(map)?;
-    validate(map, minor)?;
+    validate(map, minor, false)?;
     Ok(nb)
 }
 
@@ -55,7 +60,7 @@ pub fn writes(nb: &Value) -> Result<String, NbformatError> {
     let minor = version_minor(nb)?;
     let mut nb = nb.clone();
     let map = object_mut(&mut nb, "notebook")?;
-    validate(map, minor)?;
+    validate(map, minor, true)?;
     split_lines(map)?;
     strip_transient(map)?;
     let mut text = json::dumps(&nb, &DumpOptions::nbformat_write());
@@ -85,14 +90,26 @@ fn version_minor(nb: &Value) -> Result<i64, NbformatError> {
     match map.get("nbformat") {
         Some(Value::Int(Int::Small(4))) => {}
         Some(other) => {
+            let hint = match other {
+                Value::Int(Int::Small(1..=3)) => {
+                    "only nbformat 4 notebooks are supported; convert older notebooks first, \
+                     for example with `jupyter nbconvert --to notebook`"
+                }
+                Value::Int(Int::Small(5..)) => {
+                    "only nbformat 4 notebooks are supported; this notebook is newer"
+                }
+                _ => "\"nbformat\" must be the integer 4",
+            };
             let shown = json::dumps(other, &DumpOptions::compact());
             return Err(NbformatError::UnsupportedVersion {
                 found: format!("nbformat {shown}"),
+                hint,
             });
         }
         None => {
             return Err(NbformatError::UnsupportedVersion {
                 found: "no nbformat version".into(),
+                hint: "\"nbformat\" must be the integer 4",
             })
         }
     }
@@ -182,7 +199,8 @@ fn rejoin_cell(cell: &mut Map, index: usize) -> Result<(), NbformatError> {
         None => {}
         Some(Value::Object(attachments)) => {
             for attachment in attachments.values_mut() {
-                rejoin_mimebundle(object_mut(attachment, "attachment")?);
+                let attachment = object_mut(attachment, "attachment").map_err(in_cell(index))?;
+                rejoin_mimebundle(attachment);
             }
         }
         Some(_) => return Err(bad("attachments must be an object")),
@@ -194,44 +212,33 @@ fn rejoin_cell(cell: &mut Map, index: usize) -> Result<(), NbformatError> {
     let Some(outputs) = cell.get_mut("outputs") else {
         return Ok(());
     };
-    for output in items_mut(outputs, "outputs").map_err(|_| bad("outputs must be a list"))? {
-        let output = object_mut(output, "output").map_err(|_| bad("output must be an object"))?;
-        rejoin_output(output).map_err(|_| bad("malformed output"))?;
+    for output in items_mut(outputs, "outputs").map_err(in_cell(index))? {
+        let output = object_mut(output, "output").map_err(in_cell(index))?;
+        rejoin_output(output).map_err(in_cell(index))?;
     }
     Ok(())
 }
 
 fn rejoin_output(output: &mut Map) -> Result<(), NbformatError> {
-    enum Kind {
-        Rich,
-        Other { present: bool },
-    }
-    let kind = match output.get("output_type") {
-        Some(Value::Str(t)) if t == "execute_result" || t == "display_data" => Kind::Rich,
-        // Upstream tests membership in a set, which cannot hold a list or dict.
-        Some(Value::List(_) | Value::Object(_)) => return Err(invalid("unhashable output_type")),
-        Some(t) => Kind::Other {
-            present: t.truthy(),
-        },
-        None => Kind::Other { present: false },
-    };
-    match kind {
-        Kind::Rich => {
+    match output.get("output_type") {
+        Some(Value::Str(t)) if t == "execute_result" || t == "display_data" => {
             if let Some(data) = output.get_mut("data") {
                 rejoin_mimebundle(object_mut(data, "output data")?);
             }
         }
-        Kind::Other { present: true } => {
-            if let Some(text @ Value::List(_)) = output.get_mut("text") {
-                let Value::List(lines) = &*text else {
-                    unreachable!("matched a list")
-                };
-                let joined =
-                    join_strings(lines).ok_or_else(|| invalid("text lines must be strings"))?;
-                *text = Value::Str(joined);
+        // Upstream tests membership in a set, which cannot hold a list or dict.
+        Some(Value::List(_) | Value::Object(_)) => return Err(invalid("unhashable output_type")),
+        // Any other truthy output type has its `text` lines joined.
+        Some(t) if t.truthy() => {
+            if let Some(text) = output.get_mut("text") {
+                if let Value::List(lines) = text {
+                    let joined =
+                        join_strings(lines).ok_or_else(|| invalid("text lines must be strings"))?;
+                    *text = Value::Str(joined);
+                }
             }
         }
-        Kind::Other { present: false } => {}
+        _ => {}
     }
     Ok(())
 }
@@ -280,17 +287,18 @@ fn split_lines(nb: &mut Map) -> Result<(), NbformatError> {
     for (index, cell) in cells_mut(nb)?.iter_mut().enumerate() {
         let cell = object_mut(cell, &format!("cell {index}"))?;
         let bad = |what: &str| invalid(format!("cell {index}: {what}"));
-        if let Some(source @ Value::Str(_)) = cell.get_mut("source") {
-            let Value::Str(text) = &*source else {
-                unreachable!("matched a string")
-            };
-            *source = split_lines_value(text);
+        if let Some(source) = cell.get_mut("source") {
+            if let Value::Str(text) = source {
+                *source = split_lines_value(text);
+            }
         }
         match cell.get_mut("attachments") {
             None => {}
             Some(Value::Object(attachments)) => {
                 for attachment in attachments.values_mut() {
-                    split_mimebundle(object_mut(attachment, "attachment")?);
+                    let attachment =
+                        object_mut(attachment, "attachment").map_err(in_cell(index))?;
+                    split_mimebundle(attachment);
                 }
             }
             Some(_) => return Err(bad("attachments must be an object")),
@@ -304,10 +312,9 @@ fn split_lines(nb: &mut Map) -> Result<(), NbformatError> {
         let outputs = cell
             .get_mut("outputs")
             .ok_or_else(|| bad("missing \"outputs\""))?;
-        for output in items_mut(outputs, "outputs").map_err(|_| bad("outputs must be a list"))? {
-            let output =
-                object_mut(output, "output").map_err(|_| bad("output must be an object"))?;
-            split_output(output).map_err(|_| bad("malformed output"))?;
+        for output in items_mut(outputs, "outputs").map_err(in_cell(index))? {
+            let output = object_mut(output, "output").map_err(in_cell(index))?;
+            split_output(output).map_err(in_cell(index))?;
         }
     }
     Ok(())
@@ -326,13 +333,11 @@ fn split_output(output: &mut Map) -> Result<(), NbformatError> {
         Some(Value::Str(t)) if t == "stream" => {
             match output.get_mut("text") {
                 None => return Err(invalid("stream output without text")),
-                Some(text @ Value::Str(_)) => {
-                    let Value::Str(s) = &*text else {
-                        unreachable!("matched a string")
-                    };
-                    *text = split_lines_value(s);
+                Some(text) => {
+                    if let Value::Str(s) = text {
+                        *text = split_lines_value(s);
+                    }
                 }
-                Some(_) => {}
             }
             Ok(())
         }
@@ -341,9 +346,11 @@ fn split_output(output: &mut Map) -> Result<(), NbformatError> {
 }
 
 /// The part of `nbformat.validate` that changes the notebook: id repair for nbformat >= 4.5.
-fn validate(nb: &mut Map, minor: i64) -> Result<(), NbformatError> {
+///
+/// `writing` is true when the cells are still in their in-memory form (see [`repair_ids`]).
+fn validate(nb: &mut Map, minor: i64, writing: bool) -> Result<(), NbformatError> {
     if minor >= 5 {
-        repair_ids(cells_mut(nb)?)?;
+        repair_ids(cells_mut(nb)?, writing)?;
     }
     Ok(())
 }
@@ -353,8 +360,13 @@ fn validate(nb: &mut Map, minor: i64) -> Result<(), NbformatError> {
 /// Upstream draws random ids; these are derived from the cell's content (findings F-003), so an
 /// unchanged cell keeps its id wherever it sits and diffs of two such notebooks show no
 /// spurious id changes.
-fn repair_ids(cells: &mut [Value]) -> Result<(), NbformatError> {
-    let mut taken: HashSet<String> = HashSet::new();
+///
+/// The hash input is the cell as `reads` returns it. When `writing`, the cells have not been
+/// rejoined and stripped yet, so that is done on a copy first; the id then does not depend on how
+/// the caller spelled `source` or whether `trusted` was set, and equals the id `reads` would
+/// generate for the written file.
+fn repair_ids(cells: &mut [Value], writing: bool) -> Result<(), NbformatError> {
+    let mut ids = IdGenerator::new(writing);
     let mut missing = Vec::new();
     for (index, cell) in cells.iter().enumerate() {
         let cell = cell
@@ -363,7 +375,7 @@ fn repair_ids(cells: &mut [Value]) -> Result<(), NbformatError> {
         match cell.get("id") {
             None => missing.push(index),
             Some(Value::Str(id)) => {
-                taken.insert(id.clone());
+                ids.taken.insert(id.clone());
             }
             // Upstream keeps ids in a set, which cannot hold a list or dict.
             Some(Value::List(_) | Value::Object(_)) => {
@@ -374,7 +386,7 @@ fn repair_ids(cells: &mut [Value]) -> Result<(), NbformatError> {
     }
 
     for index in missing {
-        let id = generate_id(&canonical_json(&cells[index]), &mut taken);
+        let id = ids.generate(&cells[index]);
         if let Value::Object(cell) = &mut cells[index] {
             cell.insert("id".into(), Value::Str(id));
         }
@@ -399,7 +411,7 @@ fn repair_ids(cells: &mut [Value]) -> Result<(), NbformatError> {
         let Some((position, _, _)) = cell.shift_remove_full("id") else {
             continue;
         };
-        let id = generate_id(&canonical_json(&cells[index]), &mut taken);
+        let id = ids.generate(&cells[index]);
         if let Value::Object(cell) = &mut cells[index] {
             cell.shift_insert(position, "id".into(), Value::Str(id));
         }
@@ -407,38 +419,100 @@ fn repair_ids(cells: &mut [Value]) -> Result<(), NbformatError> {
     Ok(())
 }
 
-/// Compact JSON with sorted keys and ASCII escapes: the hash input for generated ids.
-fn canonical_json(cell: &Value) -> String {
-    let options = DumpOptions {
-        sort_keys: true,
-        ..DumpOptions::compact()
-    };
-    json::dumps(cell, &options)
+/// Derives cell ids from cell content.
+///
+/// An id is the first 8 hex digits of the 64-bit FNV-1a hash of the cell's canonical JSON
+/// (compact, keys sorted, ASCII escapes). When that id is taken, the hash is continued with the
+/// bytes `:1`, `:2`, ... until it is not.
+struct IdGenerator {
+    /// Every string id in the notebook, explicit or generated.
+    taken: HashSet<String>,
+    /// The next suffix to try for a content hash. The suffix sequence depends on the hash
+    /// state alone and `taken` only grows, so suffixes before this one are known to be taken.
+    next_suffix: HashMap<u64, u32>,
+    writing: bool,
+    options: DumpOptions,
+    buffer: String,
+    #[cfg(test)]
+    probes: usize,
 }
 
-/// The first 8 hex digits of the 64-bit FNV-1a hash of `content`, extended with `:1`, `:2`, ...
-/// until the id is not already taken. The chosen id is added to `taken`.
-fn generate_id(content: &str, taken: &mut HashSet<String>) -> String {
-    let mut attempt = 0u32;
-    loop {
-        let hash = if attempt == 0 {
-            fnv1a64(content)
-        } else {
-            fnv1a64(&format!("{content}:{attempt}"))
-        };
-        let id = format!("{:08x}", hash >> 32);
-        if taken.insert(id.clone()) {
-            return id;
+impl IdGenerator {
+    fn new(writing: bool) -> Self {
+        IdGenerator {
+            taken: HashSet::new(),
+            next_suffix: HashMap::new(),
+            writing,
+            options: DumpOptions {
+                sort_keys: true,
+                ..DumpOptions::compact()
+            },
+            buffer: String::new(),
+            #[cfg(test)]
+            probes: 0,
         }
-        attempt += 1;
+    }
+
+    /// An id for `cell` that is not taken yet, which is then taken.
+    fn generate(&mut self, cell: &Value) -> String {
+        let content = self.hash_content(cell);
+        let mut suffix = self.next_suffix.get(&content).copied().unwrap_or(0);
+        loop {
+            #[cfg(test)]
+            {
+                self.probes += 1;
+            }
+            let hash = if suffix == 0 {
+                content
+            } else {
+                fnv1a64_extend(fnv1a64_extend(content, b":"), suffix.to_string().as_bytes())
+            };
+            let id = format!("{:08x}", hash >> 32);
+            if self.taken.insert(id.clone()) {
+                self.next_suffix.insert(content, suffix + 1);
+                return id;
+            }
+            suffix += 1;
+        }
+    }
+
+    fn hash_content(&mut self, cell: &Value) -> u64 {
+        self.buffer.clear();
+        if self.writing {
+            json::write_value(&mut self.buffer, &as_read_back(cell), &self.options);
+        } else {
+            json::write_value(&mut self.buffer, cell, &self.options);
+        }
+        fnv1a64(&self.buffer)
     }
 }
 
+/// The cell as `reads` would return the file `writes` makes from it.
+///
+/// Best effort: a cell that cannot be rejoined cannot be read back either, and then any
+/// deterministic form will do.
+fn as_read_back(cell: &Value) -> Value {
+    let mut cell = cell.clone();
+    if let Value::Object(map) = &mut cell {
+        let _ = rejoin_cell(map, 0);
+        if let Some(Value::Object(metadata)) = map.get_mut("metadata") {
+            metadata.shift_remove("trusted");
+        }
+    }
+    cell
+}
+
 fn fnv1a64(text: &str) -> u64 {
-    text.bytes().fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
+    fnv1a64_extend(FNV_OFFSET_BASIS, text.as_bytes())
+}
+
+fn fnv1a64_extend(hash: u64, bytes: &[u8]) -> u64 {
+    bytes.iter().fold(hash, |hash, &byte| {
         (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
     })
 }
+
+const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
 
 #[cfg(test)]
 mod tests {
@@ -536,17 +610,35 @@ mod tests {
             (r#"{"metadata": {}, "cells": []}"#, "no nbformat"),
         ] {
             match reads(text) {
-                Err(NbformatError::UnsupportedVersion { found }) => {
+                Err(NbformatError::UnsupportedVersion { found, .. }) => {
                     assert!(found.contains(expected), "{found}")
                 }
                 other => panic!("{text}: {other:?}"),
             }
         }
-        let message = reads(r#"{"nbformat": 2}"#).unwrap_err().to_string();
-        assert!(
-            message.contains("jupyter nbconvert --to notebook"),
-            "{message}"
-        );
+        let message = |text: &str| reads(text).unwrap_err().to_string();
+        let convert = "jupyter nbconvert --to notebook";
+        for older in [
+            r#"{"nbformat": 1}"#,
+            r#"{"nbformat": 2}"#,
+            r#"{"nbformat": 3}"#,
+        ] {
+            assert!(message(older).contains(convert), "{older}");
+        }
+        for other in [
+            r#"{"nbformat": 5, "nbformat_minor": 0}"#,
+            r#"{"nbformat": 4.0}"#,
+            r#"{"nbformat": "4"}"#,
+            r#"{"nbformat": true}"#,
+            r#"{"nbformat": 0}"#,
+            r#"{}"#,
+        ] {
+            let message = message(other);
+            assert!(!message.contains(convert), "{other}: {message}");
+            assert!(!message.contains("older"), "{other}: {message}");
+        }
+        assert!(message(r#"{"nbformat": 4.0}"#).contains("must be the integer 4"));
+        assert!(message(r#"{"nbformat": 5}"#).contains("newer"));
     }
 
     #[test]
@@ -587,6 +679,38 @@ mod tests {
         ] {
             assert!(reads(text).is_err(), "{text}");
         }
+    }
+
+    #[test]
+    fn errors_name_the_cell_and_keep_the_detail() {
+        let error = |text: String| reads(&text).unwrap_err().to_string();
+        let output = |output: &str| {
+            notebook(&format!(
+                r#"[{{"cell_type": "raw", "metadata": {{}}}}, {{"cell_type": "code", "metadata": {{}}, "outputs": [{output}]}}]"#
+            ))
+        };
+        let message = error(output(r#"{"output_type": "stream", "text": ["a", 1]}"#));
+        assert!(
+            message.contains("cell 1") && message.contains("text lines must be strings"),
+            "{message}"
+        );
+        let message = error(output("1"));
+        assert!(
+            message.contains("cell 1") && message.contains("output must be a JSON object"),
+            "{message}"
+        );
+        let message = error(output(r#"{"output_type": "display_data", "data": []}"#));
+        assert!(
+            message.contains("cell 1") && message.contains("output data must be a JSON object"),
+            "{message}"
+        );
+        let message = error(notebook(
+            r#"[{"cell_type": "raw", "metadata": {}, "attachments": {"a": 1}}]"#,
+        ));
+        assert!(
+            message.contains("cell 0") && message.contains("attachment must be a JSON object"),
+            "{message}"
+        );
     }
 
     #[test]
@@ -683,10 +807,98 @@ mod tests {
     }
 
     #[test]
+    fn generated_ids_are_stable() {
+        // Computed from the rule in docs/process/u02-nbformat.md, independently of this code.
+        let same = r#"{"cell_type": "markdown", "metadata": {}, "source": "same"}"#;
+        let code = r#"{"cell_type": "code", "execution_count": null, "metadata": {},
+                       "outputs": [], "source": ""}"#;
+        let raw = r#"{"cell_type": "raw", "metadata": {}, "source": "é\u2028"}"#;
+        let nb = read(&format!(
+            r#"{{"nbformat": 4, "nbformat_minor": 5, "metadata": {{}},
+                "cells": [{same}, {same}, {same}, {same}, {code}, {raw}]}}"#
+        ));
+        assert_eq!(
+            cell_ids(&nb),
+            ["ec9f074f", "d2a9c719", "d2a9c619", "d2a9c519", "729e0f33", "0fb51b3c"]
+        );
+
+        let dup = r#"{"cell_type": "raw", "metadata": {}, "source": "q", "id": "x"}"#;
+        let nb = read(&format!(
+            r#"{{"nbformat": 4, "nbformat_minor": 5, "metadata": {{}}, "cells": [{dup}, {dup}, {dup}]}}"#
+        ));
+        assert_eq!(cell_ids(&nb), ["x", "0ee374e3", "42b8d166"]);
+    }
+
+    #[test]
+    fn identical_cells_do_not_rescan_taken_suffixes() {
+        let cell = parse(r#"{"cell_type": "raw", "metadata": {}, "source": ""}"#);
+        let count = 20_000;
+        let mut ids = IdGenerator::new(false);
+        let generated: HashSet<String> = (0..count).map(|_| ids.generate(&cell)).collect();
+        assert_eq!(generated.len(), count);
+        // One probe per id, plus a few retries when two ids collide in their first 32 bits.
+        assert!(ids.probes < count + count / 100, "{} probes", ids.probes);
+    }
+
+    #[test]
+    fn many_identical_cells_get_distinct_ids() {
+        let missing = r#"{"cell_type": "raw", "metadata": {}, "source": ""}"#;
+        let same = r#"{"cell_type": "raw", "metadata": {}, "source": "", "id": "same"}"#;
+        for cell in [missing, same] {
+            let cells = vec![cell; 20_000].join(",");
+            let nb = read(&format!(
+                r#"{{"nbformat": 4, "nbformat_minor": 5, "metadata": {{}}, "cells": [{cells}]}}"#
+            ));
+            let ids = cell_ids(&nb);
+            assert_eq!(ids.iter().collect::<HashSet<_>>().len(), ids.len());
+        }
+    }
+
+    #[test]
+    fn writes_ids_do_not_depend_on_how_the_cell_is_spelled() {
+        let written_id = |cell: &str| {
+            let nb = parse(&format!(
+                r#"{{"nbformat": 4, "nbformat_minor": 5, "metadata": {{}}, "cells": [{cell}]}}"#
+            ));
+            let text = writes(&nb).unwrap();
+            // What the file reads back as, and what the unwritten notebook reads as.
+            let written = cell_ids(&reads(&text).unwrap());
+            let direct = cell_ids(&reads(&json::dumps(&nb, &DumpOptions::compact())).unwrap());
+            assert_eq!(written, direct, "{cell}");
+            written.into_iter().next().unwrap()
+        };
+        let string = written_id(r#"{"cell_type": "raw", "metadata": {}, "source": "s"}"#);
+        let list = written_id(r#"{"cell_type": "raw", "metadata": {}, "source": ["s"]}"#);
+        let trusted =
+            written_id(r#"{"cell_type": "raw", "metadata": {"trusted": true}, "source": "s"}"#);
+        assert_eq!(string, list);
+        assert_eq!(string, trusted);
+    }
+
+    #[test]
+    fn reads_of_written_notebooks_keep_the_ids_writes_generated() {
+        let cell =
+            r#"{"cell_type": "markdown", "metadata": {"trusted": true}, "source": ["a\n", "b"]}"#;
+        let dup = r#"{"cell_type": "markdown", "metadata": {}, "source": "a\nb", "id": "d"}"#;
+        let nb = parse(&format!(
+            r#"{{"nbformat": 4, "nbformat_minor": 5, "metadata": {{}}, "cells": [{cell}, {cell}, {dup}, {dup}]}}"#
+        ));
+        let text = writes(&nb).unwrap();
+        let ids = cell_ids(&reads(&text).unwrap());
+        let mut distinct = ids.clone();
+        distinct.sort();
+        distinct.dedup();
+        assert_eq!(distinct.len(), 4, "{ids:?}");
+        assert_eq!(ids[2], "d");
+        // Writing again changes nothing: the ids are already in the file.
+        assert_eq!(writes(&reads(&text).unwrap()).unwrap(), text);
+    }
+
+    #[test]
     fn writes_splits_sorts_and_indents() {
         let nb = parse(
             r#"{"nbformat": 4, "nbformat_minor": 4, "metadata": {"signature": "x", "k": {"b": 1, "a": 2}},
-                "cells": [{"cell_type": "code", "metadata": {"trusted": true}, "source": "a\nb\r\nc d",
+                "cells": [{"cell_type": "code", "metadata": {"trusted": true}, "source": "a\nb\r\nc\u2028d",
                   "execution_count": 1, "outputs": [
                     {"output_type": "stream", "name": "stdout", "text": "x\ny"},
                     {"output_type": "display_data", "metadata": {}, "data": {"text/plain": "p\nq",
@@ -735,7 +947,7 @@ mod tests {
    "source": [
     "a\n",
     "b\r\n",
-    "c ",
+    "c\u2028",
     "d"
    ]
   },
@@ -765,7 +977,8 @@ mod tests {
  "nbformat_minor": 4
 }
 "#;
-        // ` ` is written raw: ensure_ascii is off.
+        // U+2028 is written raw, not as an escape: ensure_ascii is off. `expected` spells it \u2028.
+        assert!(!text.contains("\\u2028"));
         assert_eq!(text, expected.replace("\\u2028", "\u{2028}"));
         assert_eq!(
             reads(&text)

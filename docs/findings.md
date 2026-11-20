@@ -178,6 +178,18 @@ anything requires explicit approval from the project owner (see CLAUDE.md).
 - Related upstream quirk replicated: `merge_render_with_git` raises `IndexError` when git's output
   is empty (all three inputs empty, or empty merge result); the engine returns an error there.
 
+### F-024: the `clear-all` output strategy crashes on some conflicts
+- **What**: `nbmerge --merge-strategy inline --output-strategy clear-all` (and any merge using
+  `collect_diffs` in `merging/strategies.py`) raises `TypeError: 'NoneType' object is not
+  iterable` when a one-sided decision sits next to a conflict in the same outputs list:
+  `adjust_patch_level` returns `None` for it. Patching that to skip `None` only moves the crash
+  (`combine_patches` then sorts int and str keys together), so there is no small local fix.
+  Reproductions: two upstream test-notebook family triples with `output_strategy: clear-all`
+  (`scratchpad/u10/mid_32.json`, `mid_33.json`; regenerate from `family_triples()`).
+- **Decision**: replicate (the engine returns an error where upstream raises) for now; revisit in
+  Phase 3 with a correct `clear-all` semantics if one can be defined. Candidate for an upstream
+  report (ask the owner first).
+
 ## Deliberate deviations
 
 ### F-004: no `RuntimeError` from F-001 (see above).

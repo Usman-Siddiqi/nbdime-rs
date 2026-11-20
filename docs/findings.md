@@ -384,13 +384,33 @@ doubled final newline, and a common last line that is repeated after the conflic
   prints `type(value).__name__`. The harness hands the engine plain dicts that upstream sees as
   `DiffEntry`/`NotebookNode`; the engine prints `NotebookNode` for notebook-derived values like real
   nbdime. Not a deviation from upstream itself.
-- **Markdown highlighting** (used by `pretty_print_notebook`, U08) is a Pygments `MarkdownLexer` plus
-  `Terminal256Formatter` port under `prettyprint/highlight`. A fenced code block whose language
-  Pygments has a lexer for returns `Unsupported` (the engine has no other lexers); this is a known
-  gap, reached only through `pretty_print_notebook`.
+- **Markdown highlighting** is a Pygments `MarkdownLexer` plus `Terminal256Formatter` port under
+  `prettyprint/highlight`. A fenced code block whose language Pygments has a lexer for returns
+  `Unsupported` (the engine has no other lexers); this is a known gap. Highlighting happens wherever
+  a markdown cell is printed with a blank prefix: `pretty_print_notebook` (U08) and also
+  `pretty_print_value_at` for a cell value (a markdown cell with a ```` ```python ```` fence at
+  `/cells/0`, `prefix=""`, oracle highlights, engine `Unsupported`). U08 adds the lexers.
 - Duck-typed non-notebook shapes (attachments or metadata given as lists of integers) can behave
   differently from Python; real notebooks never have them.
-- Recursion depth is bounded: nesting beyond `MAX_DEPTH` (500) is a `TooDeep` error (see F-009, F-018).
+- Recursion depth is bounded by what is visited: the printer counts the dict, list and diff levels it
+  actually descends through (values printed item by item, `pformat` of a list, patch entries of a
+  diff, metadata), and descending past `MAX_DEPTH` (500) is a `TooDeep` error (see F-009, F-018). A
+  deep part of a notebook that the diff or the decisions never visit is not looked at, as upstream
+  does not. Measured on the oracle (a shallow call stack): nested dicts print to about 495 levels,
+  nested lists to 328 (`pformat` uses several frames per level) and chains of `patch` entries to
+  328, so the engine succeeds somewhat further, as F-009 decided.
+- Decisions are printed from their JSON value in the dev tool (`Printer::merge_decision_values`),
+  which keeps every key upstream keeps: extra keys in sorted order, a non-string `strategy`, the
+  `diff` key, and a missing `conflict` is an error (`KeyError` upstream). Engine decisions
+  (`merge_decisions`) have `strategy` and `_level` as their only extra keys.
+- The renderers pick their temporary directory like `tempfile.gettempdir()` (`TMPDIR`, `TEMP`,
+  `TMP`, `/tmp`, `/var/tmp`, `/usr/tmp`, then the working directory), find tools like
+  `shutil.which` (`access(X_OK)`, directories skipped, `PATH=""` finds nothing) and leave the
+  tools' standard error to the caller, as `Popen` does.
+- The dev tool takes `use_color`, `color_words`, `use_git` and `use_diff` as booleans only (error
+  otherwise). Upstream raises `KeyError` for a `use_color` that is not equal to a bool (`1` and `0`
+  work, it indexes a `{True, False}` dict) and reads the other three by truthiness; a deliberate
+  tightening of a test interface.
 
 ## Open questions
 

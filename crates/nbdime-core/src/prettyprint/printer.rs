@@ -1,11 +1,13 @@
 //! The `pretty_print_*` functions of upstream's `prettyprint.py`.
 
-use crate::diff_format::{DiffEntry, Key, Op};
-use crate::merging::decisions::{diffs_eq, Action, MergeDecision};
+use std::borrow::Cow;
+
+use crate::diff_format::{diff_from_value, DiffEntry, Key, Op};
+use crate::merging::decisions::{diffs_eq, MergeDecision};
 use crate::patch::patch;
 use crate::path::{join_path, star_path_str};
 use crate::py;
-use crate::value::{Map, PyType, Value};
+use crate::value::{Int, Map, PyType, Value};
 
 use super::highlight::colorize_markdown;
 use super::pformat::pformat;
@@ -20,17 +22,37 @@ type Result<T> = std::result::Result<T, PrettyPrintError>;
 /// Writes pretty-printed notebook diffs, merge decisions and values to `out`.
 ///
 /// Nothing is written that upstream would not write, and when printing fails what was written
-/// before the failure stays in `out`, like the stream upstream writes to.
+/// before the failure stays in `out`, like the stream upstream writes to. Callers that must not
+/// emit partial output print to a scratch string.
+///
+/// Containers are printed recursively, to at most [`MAX_DEPTH`] levels of the values and diffs
+/// that are actually visited; descending further is [`PrettyPrintError::TooDeep`].
 pub struct Printer<'a> {
     config: &'a PrettyPrintConfig,
     out: &'a mut String,
+    depth: usize,
 }
 
 const NOTEBOOK_DIFF_ENTRY_END: &str = "\n";
 
 impl<'a> Printer<'a> {
     pub fn new(config: &'a PrettyPrintConfig, out: &'a mut String) -> Self {
-        Printer { config, out }
+        Printer {
+            config,
+            out,
+            depth: 0,
+        }
+    }
+
+    /// Runs `f` one container level deeper.
+    fn nested<T>(&mut self, f: impl FnOnce(&mut Self) -> Result<T>) -> Result<T> {
+        if self.depth >= MAX_DEPTH {
+            return Err(PrettyPrintError::TooDeep);
+        }
+        self.depth += 1;
+        let result = f(self);
+        self.depth -= 1;
+        result
     }
 
     fn write(&mut self, text: &str) {
@@ -70,21 +92,7 @@ impl<'a> Printer<'a> {
     /// `pretty_print_value_at`: a value that sits at `path`, with the formatter for the cells,
     /// outputs and attachments that the path names.
     pub fn value_at(&mut self, value: &Value, path: Option<&str>, prefix: &str) -> Result<()> {
-        let starred = match path {
-            None => None,
-            Some(path) => {
-                let trail = if path.starts_with('/') {
-                    path
-                } else {
-                    match path.split_once('/') {
-                        Some((_, trail)) => trail,
-                        None => return invalid(format!("path {path:?} has no '/' to split at")),
-                    }
-                };
-                Some(star_path_str(trail))
-            }
-        };
-        match starred.as_deref() {
+        match starred_path(path)?.as_deref() {
             Some("/cells/*") => self.cell(None, value, prefix, true),
             Some("/cells") => {
                 for cell in iterate(value)? {
@@ -101,6 +109,26 @@ impl<'a> Printer<'a> {
             }
             Some("/cells/*/attachments") => self.attachments(value, prefix),
             _ => self.value(value, prefix),
+        }
+    }
+
+    /// `pretty_print_value_at` of the list `items`, without copying them where the path lets
+    /// the printer visit them one by one.
+    fn items_at(&mut self, items: &[Value], path: &str, prefix: &str) -> Result<()> {
+        match starred_path(Some(path))?.as_deref() {
+            Some("/cells") => {
+                for cell in items {
+                    self.cell(None, cell, prefix, true)?;
+                }
+                Ok(())
+            }
+            Some("/cells/*/outputs") => {
+                for output in items {
+                    self.output(None, output, prefix)?;
+                }
+                Ok(())
+            }
+            _ => self.value_at(&Value::List(items.to_vec()), Some(path), prefix),
         }
     }
 
@@ -146,19 +174,22 @@ impl<'a> Printer<'a> {
         let Value::List(items) = li else {
             return invalid("expected a list");
         };
-        if li.nesting_exceeds(MAX_DEPTH) {
-            return Err(PrettyPrintError::TooDeep);
-        }
-        let formatted = pformat(li);
-        let room = MAXWIDTH as i64 - py::py_len(prefix) as i64;
-        if (py::py_len(&formatted) as i64) < room && !formatted.contains("\\n") {
-            self.write(&format!("{prefix}{formatted}\n"));
-        } else {
-            for (k, v) in items.iter().enumerate() {
-                self.item(&format!("item[{k}]"), v, prefix)?;
+        self.nested(|this| {
+            // `li` itself is the level just entered.
+            if li.nesting_exceeds(MAX_DEPTH + 1 - this.depth) {
+                return Err(PrettyPrintError::TooDeep);
             }
-        }
-        Ok(())
+            let formatted = pformat(li);
+            let room = MAXWIDTH as i64 - py::py_len(prefix) as i64;
+            if (py::py_len(&formatted) as i64) < room && !formatted.contains("\\n") {
+                this.write(&format!("{prefix}{formatted}\n"));
+            } else {
+                for (k, v) in items.iter().enumerate() {
+                    this.item(&format!("item[{k}]"), v, prefix)?;
+                }
+            }
+            Ok(())
+        })
     }
 
     /// `pretty_print_dict`: the items of `d` without the keys in `exclude`, in key order, as
@@ -174,7 +205,7 @@ impl<'a> Printer<'a> {
             .iter()
             .filter(|(k, _)| !exclude.contains(&k.as_str()))
             .collect();
-        self.entries(entries, prefix)
+        self.nested(|this| this.entries(entries, prefix))
     }
 
     fn entries(&mut self, mut entries: Vec<(&String, &Value)>, prefix: &str) -> Result<()> {
@@ -194,15 +225,17 @@ impl<'a> Printer<'a> {
             .iter()
             .partition(|(k, _)| known_keys.contains(&k.as_str()));
         let nested = format!("{prefix}{IND}");
-        if !known.is_empty() {
-            self.key("metadata (known keys)", prefix);
-            self.entries(known, &nested)?;
-        }
-        if !unknown.is_empty() {
-            self.key("metadata (unknown keys)", prefix);
-            self.entries(unknown, &nested)?;
-        }
-        Ok(())
+        self.nested(|this| {
+            if !known.is_empty() {
+                this.key("metadata (known keys)", prefix);
+                this.entries(known, &nested)?;
+            }
+            if !unknown.is_empty() {
+                this.key("metadata (unknown keys)", prefix);
+                this.entries(unknown, &nested)?;
+            }
+            Ok(())
+        })
     }
 
     /// `pretty_print_output`: output number `i`, or just "output" without one.
@@ -252,14 +285,7 @@ impl<'a> Printer<'a> {
         self.key("attachments", prefix);
         let nested = format!("{prefix}{IND}");
         match attachments {
-            Value::Object(map) => {
-                let mut names: Vec<_> = map.iter().collect();
-                names.sort_by(|a, b| a.0.cmp(b.0));
-                for (name, attachment) in names {
-                    self.item(name, attachment, &nested)?;
-                }
-                Ok(())
-            }
+            Value::Object(map) => self.nested(|this| this.entries(map.iter().collect(), &nested)),
             other if !other.truthy() && matches!(other, Value::List(_) | Value::Str(_)) => Ok(()),
             _ => invalid("attachments must be a dict"),
         }
@@ -407,8 +433,7 @@ impl<'a> Printer<'a> {
                     return invalid("only a list can be sliced");
                 };
                 let end = start.saturating_add(*length).min(items.len());
-                let removed = Value::List(items[start.min(end)..end].to_vec());
-                self.value_at(&removed, Some(path), config.remove())?;
+                self.items_at(&items[start.min(end)..end], path, config.remove())?;
             }
             Op::Remove => {
                 if config.should_ignore_path(&nextpath) {
@@ -516,15 +541,15 @@ impl<'a> Printer<'a> {
 
     /// `pretty_print_diff`: the diff `di` of `a`.
     pub fn diff(&mut self, a: &Value, di: &[DiffEntry], path: &str) -> Result<()> {
-        match a {
-            Value::Object(_) => self.dict_diff(a, di, path),
-            Value::List(_) => self.list_diff(a, di, path),
-            Value::Str(s) => self.string_diff(s, di, path),
+        self.nested(|this| match a {
+            Value::Object(_) => this.dict_diff(a, di, path),
+            Value::List(_) => this.list_diff(a, di, path),
+            Value::Str(s) => this.string_diff(s, di, path),
             other => invalid(format!(
                 "Invalid type {} for diff presentation.",
                 type_name(other)
             )),
-        }
+        })
     }
 
     /// `pretty_print_notebook_diff`: the header naming both files and then the diff, unless the
@@ -539,9 +564,6 @@ impl<'a> Printer<'a> {
         if di.is_empty() {
             return Ok(());
         }
-        if a.nesting_exceeds(MAX_DEPTH) {
-            return Err(PrettyPrintError::TooDeep);
-        }
         let atime = file_timestamp(afn)?;
         let btime = file_timestamp(bfn)?;
         self.write(&format!(
@@ -550,8 +572,18 @@ impl<'a> Printer<'a> {
         self.diff(a, di, "")
     }
 
-    /// `pretty_print_merge_decision`.
+    /// `pretty_print_merge_decision` of a decision the merge engine made.
     pub fn merge_decision(&mut self, base: &Value, decision: &MergeDecision) -> Result<()> {
+        self.print_decision(base, &DecisionView::of_decision(decision))
+    }
+
+    /// `pretty_print_merge_decision` of a decision given as its JSON value, which may carry keys
+    /// beyond the ones the engine sets; they are printed like upstream prints them.
+    pub fn merge_decision_value(&mut self, base: &Value, decision: &Value) -> Result<()> {
+        self.print_decision(base, &DecisionView::of_value(decision)?)
+    }
+
+    fn print_decision(&mut self, base: &Value, decision: &DecisionView<'_>) -> Result<()> {
         let config = self.config;
         let path = join_path(&decision.common_path);
         let confnote = if decision.conflict { "conflicted " } else { "" };
@@ -561,53 +593,27 @@ impl<'a> Printer<'a> {
             config.reset()
         ));
 
-        const DIFF_KEYS: [&str; 5] = [
-            "diff",
-            "local_diff",
-            "remote_diff",
-            "custom_diff",
-            "similar_insert",
-        ];
         let exclude: Vec<&str> = DIFF_KEYS
             .into_iter()
             .chain(["common_path", "action", "conflict"])
             .collect();
-        let Value::Object(fields) = decision.to_value() else {
-            return invalid("a decision serializes as a dict");
-        };
-        self.dict(&fields, &exclude, IND)?;
+        self.dict(&decision.fields, &exclude, IND)?;
 
-        let action = decision.action.as_str();
-        for dkey in DIFF_KEYS {
-            let diff = match dkey {
-                "local_diff" => decision.local_diff.as_ref(),
-                "remote_diff" => decision.remote_diff.as_ref(),
-                "custom_diff" => decision.custom_diff.as_ref(),
-                "similar_insert" => decision.similar_insert.as_ref(),
-                _ => None,
-            };
-            let same_as = |other: Option<&Vec<DiffEntry>>| match (diff, other) {
-                (None, None) => true,
-                (Some(x), Some(y)) => diffs_eq(x, y),
-                _ => false,
-            };
+        for (dkey, diff) in DIFF_KEYS.into_iter().zip(&decision.diffs) {
             let note = if dkey == "remote_diff"
-                && decision.action == Action::Either
-                && same_as(decision.local_diff.as_ref())
+                && decision.action == "either"
+                && decision.sides_agree
             {
                 continue;
-            } else if dkey == "local_diff"
-                && decision.action == Action::Either
-                && same_as(decision.remote_diff.as_ref())
-            {
+            } else if dkey == "local_diff" && decision.action == "either" && decision.sides_agree {
                 " (same as remote_diff)"
-            } else if dkey.starts_with(action) {
+            } else if dkey.starts_with(decision.action) {
                 " (selected)"
             } else {
                 ""
             };
 
-            let Some(diff) = diff.filter(|d| !d.is_empty()) else {
+            let Some(diff) = diff.as_deref().filter(|d| !d.is_empty()) else {
                 continue;
             };
             self.write(&format!(
@@ -616,7 +622,7 @@ impl<'a> Printer<'a> {
                 config.reset()
             ));
             let mut value = base;
-            let mut diff = diff.clone();
+            let mut wrapped = None;
             for (i, k) in decision.common_path.iter().enumerate() {
                 if matches!(value, Value::Str(_)) {
                     // Diffs of strings are line based, except when `common_path` points at a
@@ -627,24 +633,23 @@ impl<'a> Printer<'a> {
                             "invalid decision common path, tries to subindex string: {path}"
                         ));
                     }
-                    diff = vec![DiffEntry {
+                    wrapped = Some(vec![DiffEntry {
                         key: k.clone(),
-                        op: Op::Patch { diff },
-                    }];
+                        op: Op::Patch {
+                            diff: diff.to_vec(),
+                        },
+                    }]);
                     break;
                 }
                 value = item_at(value, k)?;
             }
-            self.diff(value, &diff, &path)?;
+            self.diff(value, wrapped.as_deref().unwrap_or(diff), &path)?;
         }
         Ok(())
     }
 
     /// `pretty_print_merge_decisions`: the number of conflicts, then every decision.
     pub fn merge_decisions(&mut self, base: &Value, decisions: &[MergeDecision]) -> Result<()> {
-        if base.nesting_exceeds(MAX_DEPTH) {
-            return Err(PrettyPrintError::TooDeep);
-        }
         let conflicted = decisions.iter().filter(|d| d.conflict).count();
         self.write(&format!(
             "{conflicted} conflicted decisions of {} total:\n",
@@ -655,6 +660,148 @@ impl<'a> Printer<'a> {
         }
         Ok(())
     }
+
+    /// `pretty_print_merge_decisions` of decisions given as JSON values.
+    pub fn merge_decision_values(&mut self, base: &Value, decisions: &[Value]) -> Result<()> {
+        let mut conflicted = 0;
+        for decision in decisions {
+            conflicted += usize::from(conflict_of(decision)?);
+        }
+        self.write(&format!(
+            "{conflicted} conflicted decisions of {} total:\n",
+            decisions.len()
+        ));
+        for decision in decisions {
+            self.merge_decision_value(base, decision)?;
+        }
+        Ok(())
+    }
+}
+
+const DIFF_KEYS: [&str; 5] = [
+    "diff",
+    "local_diff",
+    "remote_diff",
+    "custom_diff",
+    "similar_insert",
+];
+
+/// What printing a merge decision reads from it.
+struct DecisionView<'a> {
+    common_path: Cow<'a, [Key]>,
+    conflict: bool,
+    action: &'a str,
+    /// The items printed as `key: value`, once the keys that have their own treatment are left
+    /// out.
+    fields: Cow<'a, Map>,
+    /// The values of [`DIFF_KEYS`], `None` where there is nothing to print.
+    diffs: [Option<Cow<'a, [DiffEntry]>>; 5],
+    /// Whether the local and remote diffs are equal.
+    sides_agree: bool,
+}
+
+impl<'a> DecisionView<'a> {
+    fn of_decision(decision: &'a MergeDecision) -> Self {
+        let mut fields = Map::new();
+        if let Some(level) = decision.level {
+            fields.insert("_level".into(), Value::from(level));
+        }
+        if let Some(strategy) = &decision.strategy {
+            fields.insert("strategy".into(), Value::from(strategy.as_str()));
+        }
+        let diff = |d: &'a Option<Vec<DiffEntry>>| d.as_deref().map(Cow::Borrowed);
+        DecisionView {
+            common_path: Cow::Borrowed(&decision.common_path),
+            conflict: decision.conflict,
+            action: decision.action.as_str(),
+            fields: Cow::Owned(fields),
+            diffs: [
+                None,
+                diff(&decision.local_diff),
+                diff(&decision.remote_diff),
+                diff(&decision.custom_diff),
+                diff(&decision.similar_insert),
+            ],
+            sides_agree: match (&decision.local_diff, &decision.remote_diff) {
+                (None, None) => true,
+                (Some(local), Some(remote)) => diffs_eq(local, remote),
+                _ => false,
+            },
+        }
+    }
+
+    fn of_value(value: &'a Value) -> Result<Self> {
+        let Value::Object(map) = value else {
+            return invalid("a decision must be a dict");
+        };
+        let conflict = conflict_of(value)?;
+        let Some(Value::List(keys)) = map.get("common_path") else {
+            return invalid("a decision needs a common_path list");
+        };
+        let common_path = keys
+            .iter()
+            .map(|key| match key {
+                Value::Str(name) => Ok(Key::Name(name.clone())),
+                Value::Int(Int::Small(i)) if *i >= 0 => Ok(Key::Index(*i as usize)),
+                other => invalid(format!("bad path key {other:?}")),
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let Some(Value::Str(action)) = map.get("action") else {
+            return invalid("a decision needs an action string");
+        };
+        let diff = |name: &str| -> Result<Option<Cow<'a, [DiffEntry]>>> {
+            match map.get(name) {
+                Some(v) if v.truthy() => diff_from_value(v)
+                    .map(|d| Some(Cow::Owned(d)))
+                    .map_err(|e| PrettyPrintError::Invalid(e.to_string())),
+                _ => Ok(None),
+            }
+        };
+        let raw = |name: &str| map.get(name).unwrap_or(&Value::Null);
+        Ok(DecisionView {
+            common_path: Cow::Owned(common_path),
+            conflict,
+            action,
+            fields: Cow::Borrowed(map),
+            diffs: [
+                diff("diff")?,
+                diff("local_diff")?,
+                diff("remote_diff")?,
+                diff("custom_diff")?,
+                diff("similar_insert")?,
+            ],
+            sides_agree: raw("local_diff").py_eq(raw("remote_diff")),
+        })
+    }
+}
+
+/// `decision.conflict`: upstream's decisions give their keys as attributes, so a missing one is
+/// an error.
+fn conflict_of(decision: &Value) -> Result<bool> {
+    let Value::Object(map) = decision else {
+        return invalid("a decision must be a dict");
+    };
+    match map.get("conflict") {
+        Some(conflict) => Ok(conflict.truthy()),
+        None => invalid("decision has no 'conflict'"),
+    }
+}
+
+/// The starred path that `pretty_print_value_at` dispatches on: `path` itself, or what follows
+/// its first `/` if it does not start with one.
+fn starred_path(path: Option<&str>) -> Result<Option<String>> {
+    let Some(path) = path else {
+        return Ok(None);
+    };
+    let trail = if path.starts_with('/') {
+        path
+    } else {
+        match path.split_once('/') {
+            Some((_, trail)) => trail,
+            None => return invalid(format!("path {path:?} has no '/' to split at")),
+        }
+    };
+    Ok(Some(star_path_str(trail)))
 }
 
 /// `value[key]` for a dict with a string key or a list with an integer index.
@@ -991,5 +1138,228 @@ mod tests {
             "action": "local", "local_diff": [{"op": "addrange", "key": 0, "valuelist": "x"}],
             "remote_diff": null}]"#;
         assert!(merge_decisions(&plain(), through_string).is_err());
+    }
+
+    fn decision_values(config: &PrettyPrintConfig, decisions: &str) -> Result<String> {
+        let Value::List(items) = parse(decisions).unwrap() else {
+            panic!("decisions are a list");
+        };
+        let base = parse(r#"{"nbformat": 4, "metadata": {"a": 1}, "cells": []}"#).unwrap();
+        let mut out = String::new();
+        Printer::new(config, &mut out).merge_decision_values(&base, &items)?;
+        Ok(out)
+    }
+
+    /// A decision with the keys the engine sets and then some, as `base` plus `extra`.
+    fn decision_with(extra: &str) -> String {
+        format!(
+            r#"[{{"common_path": ["metadata"], "conflict": true, "action": "local",
+            "local_diff": [{{"op": "replace", "key": "a", "value": 1}}],
+            "remote_diff": [{{"op": "replace", "key": "a", "value": 1.0}}], {extra}}}]"#
+        )
+    }
+
+    const DECISION_TAIL: &str = "--- local_diff (selected):\n## replaced /metadata/a:\n-  1\n+  1\n\n\
+         --- remote_diff:\n## replaced (type changed from int to float) /metadata/a:\n-  1\n+  1.0\n\n";
+
+    #[test]
+    fn decision_values_print_every_extra_key_in_sorted_order() {
+        let decision =
+            decision_with(r#""strategy": "use-local", "_level": 1, "zzz": [1, 2], "aaa": "q""#);
+        assert_eq!(
+            decision_values(&plain(), &decision).unwrap(),
+            format!(
+                "1 conflicted decisions of 1 total:\n==== conflicted decision at /metadata:\n\
+                 \x20 _level: 1\n  aaa: q\n  strategy: use-local\n  zzz:\n    [1, 2]\n{DECISION_TAIL}"
+            )
+        );
+    }
+
+    #[test]
+    fn decision_strategies_of_any_type_are_printed() {
+        for (strategy, printed) in [("null", "None"), ("3", "3")] {
+            let out = decision_values(
+                &plain(),
+                &decision_with(&format!(r#""strategy": {strategy}"#)),
+            )
+            .unwrap();
+            assert!(out.contains(&format!("  strategy: {printed}\n")), "{out}");
+        }
+        let out = decision_values(&plain(), &decision_with(r#""strategy": ["x"]"#)).unwrap();
+        assert!(out.contains("  strategy:\n    ['x']\n"), "{out}");
+    }
+
+    #[test]
+    fn a_decision_value_prints_its_diff_key_and_selects_it_by_prefix() {
+        let extra = r#""diff": [{"op": "replace", "key": "a", "value": 2}], "action": "diff""#;
+        let decision = decision_with(extra).replace(r#""action": "local", "#, "");
+        let out = decision_values(&plain(), &decision).unwrap();
+        assert!(
+            out.contains(
+                "--- diff (selected):\n## replaced /metadata/a:\n-  1\n+  2\n\n--- local_diff:"
+            ),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn a_decision_value_without_conflict_is_an_error_like_upstreams_key_error() {
+        let decision = decision_with(r#""x": 1"#).replace(r#""conflict": true, "#, "");
+        assert!(decision_values(&plain(), &decision).is_err());
+        // The count is taken before anything is written.
+        let mut out = String::new();
+        let value = parse(&decision).unwrap();
+        let base = parse("{}").unwrap();
+        let items = value.as_list().unwrap();
+        assert!(Printer::new(&plain(), &mut out)
+            .merge_decision_values(&base, items)
+            .is_err());
+        assert_eq!(out, "");
+    }
+
+    #[test]
+    fn decision_values_compare_the_sides_with_python_equality() {
+        let decision = decision_with(r#""x": 1"#).replace("local\"", "either\"");
+        let out = decision_values(&plain(), &decision).unwrap();
+        assert!(
+            out.contains("--- local_diff (same as remote_diff):"),
+            "{out}"
+        );
+        assert!(!out.contains("remote_diff:"), "{out}");
+    }
+
+    #[test]
+    fn decision_values_that_are_no_decisions_are_errors() {
+        for decision in [
+            r#"[1]"#,
+            r#"[{"conflict": false, "action": "a"}]"#,
+            r#"[{"common_path": [], "conflict": false}]"#,
+            r#"[{"common_path": [], "conflict": false, "action": 5}]"#,
+            r#"[{"common_path": [], "conflict": false, "action": "a", "local_diff": "abc"}]"#,
+            r#"[{"common_path": [null], "conflict": false, "action": "a"}]"#,
+        ] {
+            assert!(decision_values(&plain(), decision).is_err(), "{decision}");
+        }
+    }
+
+    #[test]
+    fn engine_decisions_print_their_strategy_and_level() {
+        let decision = MergeDecision::from_value(
+            &parse(
+                r#"{"common_path": [], "conflict": false, "action": "base",
+                    "local_diff": null, "remote_diff": null, "strategy": "mixed", "_level": 2}"#,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let mut out = String::new();
+        Printer::new(&plain(), &mut out)
+            .merge_decision(&parse("{}").unwrap(), &decision)
+            .unwrap();
+        assert_eq!(out, "==== decision at /:\n  _level: 2\n  strategy: mixed\n");
+    }
+
+    /// `levels` nested dicts, or lists, around a long string.
+    fn nested_json(open: &str, close: &str, levels: usize) -> String {
+        let (open, close) = if open == "{" {
+            (r#"{"a": "#, "}")
+        } else {
+            (open, close)
+        };
+        format!(
+            r#"{}"{}"{}"#,
+            open.repeat(levels),
+            "x ".repeat(50),
+            close.repeat(levels)
+        )
+    }
+
+    #[test]
+    fn values_nested_to_the_limit_print_and_deeper_ones_are_too_deep() {
+        for (open, close) in [("{", "}"), ("[", "]")] {
+            let ok = value_at(&nested_json(open, close, MAX_DEPTH), None, "").unwrap();
+            assert!(ok.ends_with(&format!("{}\n", "x ".repeat(50))));
+            let too_deep = value_at(&nested_json(open, close, MAX_DEPTH + 1), None, "");
+            assert_eq!(too_deep, Err(PrettyPrintError::TooDeep), "{open}");
+        }
+    }
+
+    #[test]
+    fn nesting_counts_from_where_the_printer_is() {
+        // 400 nested dicts in a list, below a chain of dicts: the levels above count too.
+        let inner = nested_json("{", "}", 400);
+        let outer = format!("{}[{inner}]{}", r#"{"b": "#.repeat(100), "}".repeat(100));
+        assert_eq!(value_at(&outer, None, ""), Err(PrettyPrintError::TooDeep));
+        let fits = format!("{}[{inner}]{}", r#"{"b": "#.repeat(98), "}".repeat(98));
+        assert!(value_at(&fits, None, "").is_ok());
+    }
+
+    #[test]
+    fn only_the_part_of_a_notebook_that_is_visited_counts_towards_the_depth() {
+        let deep = nested_json("{", "}", MAX_DEPTH + 100);
+        let nb = format!(r#"{{"metadata": {{}}, "unvisited": {deep}}}"#);
+        let diff = r#"[{"op": "add", "key": "new", "value": 1}]"#;
+        assert_eq!(
+            notebook_diff(&plain(), &nb, diff).unwrap(),
+            "nbdiff a.ipynb b.ipynb\n--- a.ipynb  (no timestamp)\n+++ b.ipynb  (no timestamp)\n\
+             ## added /new:\n+  1\n\n"
+        );
+        // Visiting it is what fails.
+        let visit = r#"[{"op": "remove", "key": "unvisited"}]"#;
+        assert_eq!(
+            notebook_diff(&plain(), &nb, visit),
+            Err(PrettyPrintError::TooDeep)
+        );
+
+        let decision = r#"[{"common_path": [], "conflict": false, "action": "local",
+            "local_diff": [{"op": "add", "key": "new", "value": 1}], "remote_diff": null}]"#;
+        let Value::List(items) = parse(decision).unwrap() else {
+            unreachable!()
+        };
+        let decisions: Vec<_> = items
+            .iter()
+            .map(|d| MergeDecision::from_value(d).unwrap())
+            .collect();
+        let mut out = String::new();
+        Printer::new(&plain(), &mut out)
+            .merge_decisions(&parse(&nb).unwrap(), &decisions)
+            .unwrap();
+        assert!(out.ends_with("+  1\n\n"), "{out}");
+    }
+
+    #[test]
+    fn diffs_nested_beyond_the_limit_are_too_deep() {
+        let chain = |levels: usize| {
+            let a = nested_json("{", "}", levels);
+            let mut diff = r#"{"op": "remove", "key": "a"}"#.to_owned();
+            for _ in 1..levels {
+                diff = format!(r#"{{"op": "patch", "key": "a", "diff": [{diff}]}}"#);
+            }
+            (a, format!("[{diff}]"))
+        };
+        let (a, diff) = chain(MAX_DEPTH - 1);
+        assert!(notebook_diff(&plain(), &a, &diff).is_ok());
+        let (a, diff) = chain(MAX_DEPTH + 1);
+        assert_eq!(
+            notebook_diff(&plain(), &a, &diff),
+            Err(PrettyPrintError::TooDeep)
+        );
+    }
+
+    #[test]
+    fn removed_cells_are_printed_from_the_slice() {
+        let nb = r#"{"cells": [{"cell_type": "markdown", "source": "a"},
+                               {"cell_type": "markdown", "source": "b"}]}"#;
+        let diff = r#"[{"op": "patch", "key": "cells", "diff":
+                        [{"op": "removerange", "key": 0, "length": 2}]}]"#;
+        let out = notebook_diff(&plain(), nb, diff).unwrap();
+        assert!(
+            out.contains("## deleted /cells/0-1:\n-  markdown cell:\n-    source:\n-      a\n"),
+            "{out}"
+        );
+        assert!(
+            out.contains("-  markdown cell:\n-    source:\n-      b\n"),
+            "{out}"
+        );
     }
 }

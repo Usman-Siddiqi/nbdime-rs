@@ -173,12 +173,11 @@ anything requires explicit approval from the project owner (see CLAUDE.md).
   and global git config (`diff.indentHeuristic`, `diff.algorithm`, `color.diff.*`,
   `core.whitespace`, `merge.conflictStyle`, ...). Without git it falls back to `diff`/`diff3` or
   difflib, which produce different text again.
-- **Decision**: nbdime-rs reproduces git **2.43 with no system or global configuration** in-process
-  (unit U16) and never spawns git for rendering. (Merge rendering still spawns git until U16
-  lands, see F-026.) The parity harness pins that environment
-  (`parity/conftest.py` sets `GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL=/dev/null`). Users with a
-  customized git config will see git's defaults instead of their settings; that is documented in
-  the README. Rendering is also no longer ~1 process spawn per changed string.
+- **Decision (2026-11-20, revised)**: nbdime-rs runs git exactly as upstream does (same commands,
+  temp files, fallbacks to `diff3`/`diff` and the builtin renderers), so text rendering honours
+  the user's git version and configuration just like upstream. An in-process reproduction was
+  tried (U16) and withdrawn for licensing reasons (F-023). The parity harness pins git 2.43 with no
+  system or global config (`parity/conftest.py`), which the engine inherits. Merge rendering: F-026.
 - Related upstream quirk replicated: `merge_render_with_git` raises `IndexError` when git's output
   is empty (all three inputs empty, or empty merge result); the engine returns an error there.
 
@@ -309,9 +308,12 @@ Deliberate deviations; no differ produces any of these, and each is an error her
   git's C sources. It may use permissively licensed crates (e.g. `imara-diff`, Apache-2.0) and
   read `gix-merge` (MIT/Apache) as a reference, and uses the `git` binary only as a black-box
   oracle. Output formatting is written from scratch against git's observed output.
-- **2026-11-20**: the U16 hostile review found that the first implementation of `myers.rs`,
-  `compact.rs` and `merge.rs` (branch `unit/u16`, never pushed or merged) translates xdiff
-  function by function despite this rule. It is held back; the owner decides how to proceed.
+- **2026-11-20, decision**: the U16 hostile review found that the implementation of `myers.rs`,
+  `compact.rs` and `merge.rs` translated xdiff function by function despite this rule. The branch
+  was never pushed or merged, and it has been deleted. U16 is withdrawn: nbdime-rs spawns git
+  like upstream (F-022), which keeps the BSD license clean and gives exact parity. A clean-room
+  in-process renderer can be reconsidered in Phase 4 only from a behaviour spec, by an author who
+  has not read git's sources.
 
 ### F-025: `copy.copy(notebook_config)` drops the configured ignores (U10)
 Upstream `_split_addrange` aligns inserted items with `copy.copy(notebook_config)`.

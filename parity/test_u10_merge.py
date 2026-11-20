@@ -359,12 +359,20 @@ def test_u10_larger_notebooks(engine):
 
 def test_u10_marker_ids_are_distinct(engine):
     """F-021: marker cells get distinct, deterministic ids within one merge."""
-    cases = [c for c in family_triples() if (c.get("args") or {}).get("merge_strategy", "inline") == "inline"]
+    cases = []
+    for c in family_triples():
+        if (c.get("args") or {}).get("merge_strategy", "inline") != "inline":
+            continue
+        try:
+            o_merge_notebooks(**c)
+        except Exception:  # F-024: upstream crashes on some clear-all merges; parity covers those
+            continue
+        cases.append(c)
     first = engine.call_many("merge_notebooks", cases)
     second = engine.call_many("merge_notebooks", cases)
     seen_markers = 0
-    for (ok, got), (ok2, got2) in zip(first, second):
-        assert ok and ok2
+    for case, (ok, got), (ok2, got2) in zip(cases, first, second):
+        assert ok and ok2, (case, got)
         assert canon(got) == canon(got2)
         ids = [c["id"] for c in got[0]["cells"] if "id" in c]
         assert len(ids) == len(set(ids)), ids

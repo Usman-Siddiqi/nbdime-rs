@@ -39,11 +39,11 @@ all string fields of the upstream test notebooks, byte-identical JSON.
 | U07 `nbdiff` CLI | U04, U06 | flags, `--out`, gitref mode, exit codes |
 | U08 `nbshow` | U02 | flags and output |
 | U09 `nbpatch` | U05 | |
-| U10 merge engine (was U10 to U12) | U04, U05, U16 | decisions, chunks, apply, generic merge, strategies, autoresolve, `decide_notebook_merge`/`merge_notebooks`; spec `docs/process/u10-merge.md` |
+| U10 merge engine (was U10 to U12) | U04, U05 | decisions, chunks, apply, generic merge, strategies, autoresolve, `decide_notebook_merge`/`merge_notebooks`; spec `docs/process/u10-merge.md` |
 | U13 `nbmerge` CLI | U10, U02 | strategies from args, merge pretty-print, exit codes |
 | U14 git integration | U07, U13 | diff driver, merge driver, `nbdime config-git`, filters |
 | U15 Python package `nbdime_rs` | U04, U13 | PyO3 API per `docs/design.md`, wheels via maturin |
-| U16 git-compatible text diff/merge | none | `git diff --no-index` (plain/color/color-words) and `git merge-file` output in-process, git 2.43 defaults (F-022, F-023); spec `docs/process/u16-xdiff.md` |
+| U16 git-compatible text diff/merge | withdrawn | licensing (F-023); git is spawned like upstream (F-022). `parity/test_u16_xdiff.py` now checks U06's git renderers |
 
 ## Phase 3: integration and parity ⏳
 Full upstream-derived test set through the harness, large differential runs (≥ 100k notebook

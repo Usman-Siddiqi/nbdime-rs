@@ -1,3 +1,6 @@
+> **Withdrawn 2026-11-20** (findings F-022, F-023): nbdime-rs spawns git like upstream. The
+> parity suite `parity/test_u16_xdiff.py` stays and is satisfied by U06's subprocess renderers.
+
 # Unit U16: git's text diff and three-way merge, without git
 
 Unit spec for implementer, reviewers and fixer. The orchestrator owns it.

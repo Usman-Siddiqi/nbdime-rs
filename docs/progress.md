@@ -56,3 +56,43 @@ the bug; a generator producing too many error-only cases).
 
 ### Next steps
 - Phase 2 per the fan-out plan in the session summary (waves of up to 3 units in parallel).
+
+## Session 2 (2026-11-19 23:00 to 2026-11-20, Phase 2 waves 1 and 2)
+
+### Done
+- Owner decisions recorded (2026-11-19 23:01): deterministic ids (F-003), accept a leading BOM
+  (Q-002), proceed through Phases 2 to 4 without checking in, work on `main` and push often.
+- Wave 1 merged: U05 patch + diff utils, U02 nbformat read/write (each implementer, hostile
+  review, fixer, gate). U04 notebook diff implemented and reviewed twice (A and B); fixer running.
+- Upstream bugs found and fixed in the oracle (with neutrality tests): F-014 `diff_single_outputs`
+  mutates and reorders its input, F-019 JSON-scalar mime values crash the differ. Others recorded:
+  F-013 addendum (schema `TypeError`), F-015 extended (patch key/length types), F-018 deep nesting.
+- Wave 2 prepared: parity suites for the merge engine (U10: recorded corpus of 429 merge calls made
+  by upstream's own tests, plus generic and notebook random triples) and for git-compatible text
+  rendering (U16), both validated against mirror engines that run the oracle behind the batch
+  protocol; specs `docs/process/u10-merge.md`, `u16-xdiff.md`; findings F-021 (marker cell ids),
+  F-022 (git 2.43 default config is the target), F-023 (no translation of LGPL xdiff).
+- Roadmap: merge units U10 to U12 folded into one U10 (they share one suite); new U16.
+
+### Agent cost record (tokens / wall time)
+| Stage | U05 | U02 | U04 |
+|---|---|---|---|
+| implementer (Sonnet) | 137k / 6 min | 194k / 9.5 min | 274k / 19 min |
+| review A (Opus) | 134k (combined) | 160k / 11 min | 209k / 35 min |
+| review B (Opus) | | | 218k / 26 min |
+| fixer (Sonnet) | 107k | 121k / 9 min | running |
+A five-hour rate limit stopped all agents from 23:18 to 01:50 UTC; they were resumed with their
+context intact.
+
+### Workflow changes made
+- Mirror engines: before an implementer starts, the suite is run against a Python script that
+  speaks the batch protocol and answers with the oracle itself. Catches suite bugs (nondeterminism,
+  oracle crashes in generation) before they cost an implementer iteration.
+- Oracle-side fixes for upstream bugs live in one `upstream()` context manager, each with a
+  neutrality test proving it changes nothing where upstream does not fail.
+
+### Next steps
+- Verify and merge U04 (fixer report, timings, gate at seed 6 scale 2); enable its suite.
+- U16 implementer running. Start U10 once U04 is on `main` (it needs the notebook differ's
+  configuration); U10 uses a temporary `git merge-file` subprocess until U16 lands.
+- Wave 3: U06 pretty-printer (needs U16), U07 to U09 CLIs. Wave 4: U13, U14, U15.

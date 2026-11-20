@@ -99,6 +99,8 @@ def run_pair(case, root, env):
             argv = [cmd.split(" ", 1)[1]] + args
             cmd = "nbdime"
         cenv = dict(env, **case.get("env", {}))
+        for k in case.get("unset", ()):
+            cenv.pop(k, None)
         code, so, se = _run(bindir / cmd, argv, case.get("cwd", root), cenv, case.get("stdin"))
         results.append((code, so, se, out.read_bytes() if out.exists() else None, args))
     return results
@@ -404,6 +406,90 @@ def test_cli_nbdiff_git_refs(sandbox):
     ]
     cases = [{"cmd": "nbdiff", "args": a, "cwd": str(repo)} for a in arg_sets]
     cases += [{"cmd": "nbdiff", "args": a, "cwd": str(repo / "sub")} for a in ([], ["HEAD~3", "HEAD"])]
+    check_cli(cases, root, dict(env, GIT_CEILING_DIRECTORIES=str(root)), min_cases=len(cases))
+
+
+def _commit_repo(path, env, revs):
+    """A repository with one commit per entry of `revs` ({name: text})."""
+    path.mkdir(parents=True)
+    genv = dict(env, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@example.com", GIT_COMMITTER_NAME="t",
+                GIT_COMMITTER_EMAIL="t@example.com", GIT_AUTHOR_DATE="2020-01-01T00:00:00Z",
+                GIT_COMMITTER_DATE="2020-01-01T00:00:00Z")
+    _git(path, "init", "-q", "-b", "main", env=genv)
+    for n, files in enumerate(revs):
+        for name, text in files.items():
+            (path / name).write_text(text)
+        _git(path, "add", "-A", env=genv)
+        _git(path, "commit", "-q", "-m", "rev %d" % n, env=genv)
+    return genv
+
+
+def test_cli_review_regressions(sandbox):
+    """Linked worktrees, revision forms GitPython rejects or accepts, empty pathspecs, file names
+    that are not UTF-8, HOME unset, config dirs with ~ and $VARS, odd top-level config files and
+    wrong-typed config values."""
+    root, env = sandbox
+    base = root / "regr"
+    if base.exists():
+        shutil.rmtree(base)
+    rng = rng_for("cli-regressions")
+    nbs = [random_notebook(rng, n_cells=3)]
+    for _ in range(3):
+        nbs.append(mutate_notebook(rng, nbs[-1], 2))
+    texts = [t for t in (dumps_disk(nb) for nb in nbs) if _usable(t)]
+    assert len(texts) >= 3
+    repo = base / "repo"
+    genv = _commit_repo(repo, env, [{"a.ipynb": texts[0]}, {"a.ipynb": texts[1]}])
+    wt = base / "wt"
+    _git(repo, "worktree", "add", "-q", str(wt), "HEAD", env=genv)
+    (wt / "a.ipynb").write_text(texts[2])
+    (repo / "a.ipynb").write_text(texts[2])
+    cases = [{"cmd": "nbdiff", "args": a, "cwd": str(wt)}
+             for a in ([], ["--no-color"], ["HEAD~1"], ["HEAD~1", "HEAD"], ["HEAD", "a.ipynb"])]
+    cases += [{"cmd": "nbdiff", "args": a, "cwd": str(repo)}
+              for a in ([":/rev 0"], ["HEAD~1..HEAD"], ["HEAD~1...HEAD"], ["HEAD^!"], ["HEAD^{tree}"],
+                        ["HEAD:a.ipynb"], ["HEAD", ""], [""], ["HEAD~1", "HEAD", "", "a.ipynb"])]
+    cases.append({"cmd": "nbdiff", "args": ["HEAD~1"], "cwd": str(repo / ".git")})
+
+    odd = base / os.fsdecode(b"\xff.ipynb")
+    odd.write_text(texts[0])
+    other = base / "other.ipynb"
+    other.write_text(texts[1])
+    cases += [
+        {"cmd": "nbdiff", "args": [str(odd), str(other)]},
+        {"cmd": "nbdiff", "args": ["--no-color", str(other), str(odd), "--out", "{out}"]},
+        {"cmd": "nbmerge", "args": [str(odd), str(other), str(odd), "--out", "{out}"]},
+        {"cmd": "nbdiff", "args": ["-1\n", str(other)]},
+    ]
+
+    plain = base / "plain.ipynb"
+    plain.write_text(texts[2])
+    cfghome = base / "cfghome"
+    (cfghome / "cfg").mkdir(parents=True)
+    (cfghome / "cfg" / "nbdime_config.json").write_text('{"NbDiff": {"outputs": false}}')
+    cases += [
+        {"cmd": "nbdiff", "args": ["--no-color", str(other), str(plain)],
+         "env": {"HOME": str(cfghome), "JUPYTER_CONFIG_DIR": "~/cfg"}},
+        {"cmd": "nbdiff", "args": ["--no-color", str(other), str(plain)],
+         "env": {"HOME": str(cfghome), "JUPYTER_CONFIG_PATH": "$HOME/cfg"}},
+    ]
+    nohome = base / "nohome"
+    (nohome / ".jupyter").mkdir(parents=True)
+    (nohome / ".jupyter" / "nbdime_config.json").write_text('{"NbDiff": {"sources": false}}')
+    cases.append({"cmd": "nbdiff", "args": ["--no-color", str(other), str(plain)], "cwd": str(nohome),
+                  "unset": ["HOME", "JUPYTER_CONFIG_DIR"]})
+
+    for n, content in enumerate(['""', '[1]', '[["NbDiff", {"outputs": false}]]', '"version"',
+                                 '{"NbDiff": {"use_color": "no"}}', '{"NbDiff": {"use_color": 2}}',
+                                 '{"NbDiff": {"paths": "x"}}', '{"NbDiff": {"color_words": {}}}',
+                                 '{"NbMerge": {"base": 5}}']):
+        d = base / ("cfg%d" % n)
+        d.mkdir()
+        (d / "nbdime_config.json").write_text(content)
+        cases.append({"cmd": "nbdiff", "args": [str(other), str(plain)], "cwd": str(d)})
+        cases.append({"cmd": "nbdiff", "args": ["--config"], "cwd": str(d)})
+        cases.append({"cmd": "nbmerge", "args": [str(plain), str(other), str(plain)], "cwd": str(d)})
+    cases += [{"cmd": "nbdime extensions", "args": a} for a in (["--x"], [])]
     check_cli(cases, root, dict(env, GIT_CEILING_DIRECTORIES=str(root)), min_cases=len(cases))
 
 

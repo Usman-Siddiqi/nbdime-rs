@@ -150,7 +150,7 @@ def mutate_cell(rng, cell):
             cell["metadata"]["collapsed"] = rng.random() < 0.5
     elif r < 0.9 and "id" in cell:
         cell["id"] = "%08x" % rng.getrandbits(32)
-    elif r < 0.95 and "attachments" in cell:
+    elif r < 0.95 and cell.get("attachments"):
         name = rng.choice(sorted(cell["attachments"]))
         if rng.random() < 0.5:
             cell["attachments"][name] = {"image/png": _b64(rng, 48)}

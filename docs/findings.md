@@ -98,6 +98,29 @@ anything requires explicit approval from the project owner (see CLAUDE.md).
   with repaired ids compare modulo those ids, and check that they are 8 hex chars, unique and
   stable.
 
+### F-021: random ids on inline-cells conflict marker cells
+- **What**: the `inline-cells` merge strategy inserts markdown marker cells made with
+  `nbformat.v4.new_markdown_cell`, which draws a random id (`uuid4`) for each.
+- **Impact**: `nbmerge` output of a conflicted notebook differs from run to run.
+- **Decision**: deterministic, as F-003: 8 lowercase hex chars from a hash of the marker cell's
+  content and position, distinct from every other id in the notebook. The U10 suite compares
+  merges with marker ids masked and checks shape and distinctness (`compare_modulo_marker_ids`).
+
+### F-022: upstream's text rendering depends on the installed git and its configuration
+- **What**: with git on `PATH`, upstream renders modified multi-line strings with
+  `git diff --no-index` and resolves inline source conflicts with `git merge-file`
+  (`prettyprint.py`). The output therefore depends on the git version and on the user's system
+  and global git config (`diff.indentHeuristic`, `diff.algorithm`, `color.diff.*`,
+  `core.whitespace`, `merge.conflictStyle`, ...). Without git it falls back to `diff`/`diff3` or
+  difflib, which produce different text again.
+- **Decision**: nbdime-rs reproduces git **2.43 with no system or global configuration** in-process
+  (unit U16) and never spawns git for rendering. The parity harness pins that environment
+  (`parity/conftest.py` sets `GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL=/dev/null`). Users with a
+  customized git config will see git's defaults instead of their settings; that is documented in
+  the README. Rendering is also no longer ~1 process spawn per changed string.
+- Related upstream quirk replicated: `merge_render_with_git` raises `IndexError` when git's output
+  is empty (all three inputs empty, or empty merge result); the engine returns an error there.
+
 ## Deliberate deviations
 
 ### F-004: no `RuntimeError` from F-001 (see above).
@@ -195,6 +218,12 @@ Deliberate deviations; no differ produces any of these, and each is an error her
   `patch_*`, missing fields, unknown ops and wrong types are errors, as upstream.
 - `patch` rejects a non-list empty iterable (`{}` or `""`) as a diff; upstream accepts it.
 - The dev tool's `flatten_list_of_string_diff` requires every line of `a` to be a string.
+
+### F-023: licensing of the git-compatible diff and merge (U16)
+- git's xdiff is LGPL-2.1+ and git is GPL-2.0; nbdime-rs is BSD-3-Clause. U16 does not translate
+  git's C sources. It may use permissively licensed crates (e.g. `imara-diff`, Apache-2.0) and
+  read `gix-merge` (MIT/Apache) as a reference, and uses the `git` binary only as a black-box
+  oracle. Output formatting is written from scratch against git's observed output.
 
 ## Open questions
 

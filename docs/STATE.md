@@ -1,17 +1,16 @@
 # Current state (compact; read this first on restart)
 
-Updated 2026-11-20 23:00 UTC. Details live in `docs/progress.md`, decisions in `docs/findings.md`.
+Updated 2026-11-21 00:10 UTC. Details live in `docs/progress.md`, decisions in `docs/findings.md`.
 
 ## Merged to main
 - U01–U05, U02 (JSON I/O, generic diff, patch, nbformat), U04 notebook diff, U10 merge engine,
-  U06 terminal pretty-printer. U16 (in-process git diff) withdrawn: rendering spawns git like
+  U06 terminal pretty-printer, U07 CLI (`nbdiff`, `nbmerge`, `nbdime`; 97 parity tests incl.
+  `test_cli.py`; ~2 ms per nbdiff run vs ~1 s upstream). U16 (in-process git diff) withdrawn: rendering spawns git like
   upstream (F-022, F-023).
 - Enabled parity suites: `parity/enabled_suites.txt`.
 
 ## In flight
-- U07 CLI (`nbdiff`, `nbmerge`, `nbdime`): branch `unit/u07`, worktree `../wt/u07`. Fix round 2
-  running; then gate with `parity/test_cli.py` (which includes `test_cli_review_regressions` and
-  `test_cli_delta_regressions`), merge, and add `test_cli.py` to `enabled_suites.txt`.
+- Nothing. Next unit: U08.
 
 ## Next
 - U08 nbshow/nbpatch (Pygments lexers; IPython environment question open).

@@ -66,5 +66,6 @@ stop and ask.
 | Generic diff | identical to nbdime 4.0.4 on ~45k cases per run (also at 4x scale, seed 17); deviations F-001 (no spurious error), F-009 (depth limit), F-011 (approximate predicate scope) |
 | Notebook diff | identical on the U04 suite (upstream families, ~10k random/flagged pairs, predicates); deviations F-003, F-014, F-016, F-017, F-019; F-020 replicated |
 | Patch | identical on the U05 suite (~20k cases); deviation F-015 |
-| Merge | not started |
-| CLI output | not started |
+| Merge | identical on the U10 suite (decisions, apply, notebook merges, strategies); deviations F-021, F-027; F-024 replicated |
+| Pretty-printer | byte-identical on the U06 suite (diffs, merge decisions, values, git renderer suite U16); deviations F-030 |
+| CLI output | `nbdiff`/`nbmerge`/`nbdime` identical on `test_cli.py` (exit code, stdout, output file, stderr) incl. git ref mode, config files, review regressions; deviations F-029, F-031 |

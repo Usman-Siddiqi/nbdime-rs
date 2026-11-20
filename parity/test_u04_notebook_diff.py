@@ -369,3 +369,43 @@ def test_u04_f019_fix_is_neutral():
             continue
         assert canon(o_diff_notebooks(**copy.deepcopy(case))) == canon(raw), case
     assert raised > 0
+
+
+def _review_nb(outputs=None, attachments=None, cell_id="c1"):
+    cell = {"cell_type": "code", "execution_count": 1, "id": cell_id, "metadata": {},
+            "outputs": outputs or [], "source": "x = 1\n"}
+    cells = [cell]
+    if attachments is not None:
+        cells.append({"cell_type": "markdown", "id": "m1", "metadata": {}, "attachments": attachments,
+                      "source": "![a](attachment:f.png)"})
+    return {"cells": cells, "metadata": {}, "nbformat": 4, "nbformat_minor": 5}
+
+
+def _display(meta):
+    return {"output_type": "display_data", "data": {"image/png": "iVBORw0KGgo=\n"}, "metadata": meta}
+
+
+def test_u04_review_regressions(engine):
+    """Cases from the U04 fix round: dev-tool argument handling, F-019 in attachments, F-020."""
+    plain = _review_nb()
+    m1 = _review_nb([_display({"image/png": {"width": 100}})])
+    m2 = _review_nb([_display({"image/png": {"width": 200}})])
+    cases = [
+        {"a": _review_nb([{"output_type": "display_data", "data": {"application/json": 1}, "metadata": {}}]),
+         "b": _review_nb([{"output_type": "display_data", "data": {"application/json": 1}, "metadata": {}}])},
+        {"a": _review_nb(attachments={"f.png": {"application/json": 1}}),
+         "b": _review_nb(attachments={"f.png": {"application/json": 2}})},
+        {"a": m1, "b": m2, "targets": None},
+        {"a": m1, "b": m2, "ignores": None},
+        {"a": m1, "b": m2, "targets": {"outputs": False}},
+        {"a": m1, "b": m2, "targets": {"metadata": False}},
+        {"a": m1, "b": m2, "ignores": {"/cells/*/outputs/*/metadata": True}},
+        {"a": plain, "b": _review_nb(cell_id="c2"), "targets": {"identifier": False}},
+    ]
+    check_parity(engine, "diff_notebooks", cases, o_diff_notebooks, min_cases=len(cases))
+    bad = [
+        {"a": m1, "b": m2, "targets": {"bogus": True}},
+        {"a": m1, "b": m2, "targets": []},
+        {"a": m1, "b": m2, "ignores": []},
+    ]
+    check_parity(engine, "diff_notebooks", bad, o_diff_notebooks, min_cases=len(bad), max_error_fraction=1.0)

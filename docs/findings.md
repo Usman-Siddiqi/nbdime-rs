@@ -294,30 +294,19 @@ Deliberate deviations; no differ produces any of these, and each is an error her
   read `gix-merge` (MIT/Apache) as a reference, and uses the `git` binary only as a black-box
   oracle. Output formatting is written from scratch against git's observed output.
 
-### F-U10-1: `copy.copy(notebook_config)` drops the configured ignores (U10)
+### F-025: `copy.copy(notebook_config)` drops the configured ignores (U10)
 Upstream `_split_addrange` aligns inserted items with `copy.copy(notebook_config)`.
 `defaultdict2.copy` builds the copy through `defaultdict.copy`, which passes the original dict as
 `default_values` and then replaces it, so every key set on `notebook_differs` after import
 (`set_notebook_diff_ignores` / `set_notebook_diff_targets`) is lost in the copy. Inserts are
 therefore always aligned with the default notebook differs, even when the notebook diffs were
 made with sources, outputs, etc. ignored. Reproduced as is (the decision list depends on it);
-upstream's intent was presumably to honour the configured ignores.
+upstream's intent was presumably to honour the configured ignores. Candidate for an upstream report
+(ask the owner first).
 
-### F-U10-2: `merge_render` shells out to `git merge-file` (U10)
+### F-026: `merge_render` shells out to `git merge-file` (U10)
 Same as upstream. Kept as the interim implementation behind `merging::text::merge_render`; U16
 replaces it (see F-023). Needs a `git` binary and writes three temporary files per call.
-
-### F-U10-3: `clear-all` crashes on a one-sided decision (U10)
-Upstream `collect_diffs` does `local_diff.extend(ld)` for every decision, but a one-sided
-decision has `local_diff` or `remote_diff` of `None`. So `resolve_conflicted_decisions_list` with
-strategy `clear-all` (the `--output-strategy clear-all` option, whenever the outputs list has a
-one-sided change next to a conflict) raises `TypeError: 'NoneType' object is not iterable`.
-Minimal reproduction: the `family_triples` cases with `{"merge_strategy": "inline",
-"output_strategy": "clear-all"}` (indices 32 and 33 of the inline subset).
-Decision: reproduced (error `'NoneType' object is not iterable`), because the parity suite
-compares errors. The fix is to skip `None` diffs. Open for the orchestrator: this makes
-`test_u10_marker_ids_are_distinct` (which expects every inline family case to merge) fail
-against the oracle's own behaviour, so the test or the decision needs to change.
 
 ## Open questions
 

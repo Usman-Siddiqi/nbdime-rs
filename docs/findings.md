@@ -361,7 +361,16 @@ doubled final newline, and a common last line that is repeated after the conflic
   only, so nothing in upstream reaches it. The engine returns an error for it too rather than
   inventing a meaning. Candidate for an upstream cleanup (ask the owner first).
 
-### F-029: pretty-printer scope and quirks (U06)
+### F-029: command-line surface that is not byte-identical
+- `--version` prints nbdime-rs's own version (`nbdiff 0.x.y (nbdime-rs; compatible with nbdime
+  4.0.4)`), `--help` and usage texts are written by hand to match argparse closely but are not
+  compared byte for byte, and `--config` lists the same keys and effective values in our own
+  layout.
+- The Jupyter config path omits Python's `sys.prefix/etc/jupyter` (there is no Python prefix);
+  `$VIRTUAL_ENV` or `$CONDA_PREFIX` stand in for it.
+- Where upstream crashes with a traceback, nbdime-rs exits 1 with a one-line error.
+- nbformat's schema validation messages that `nbformat.write` logs (F-013) are not reproduced.
+### F-030: pretty-printer scope and quirks (U06)
 - `prettyprint` ports `config`, `format_value`, `hash_string`, `file_timestamp`, `pretty_print_notebook_diff`,
   `pretty_print_merge_decisions` and the text renderers (`diff_render`, `merge_render` with their git,
   diff, diff3, difflib and built-in fallbacks). `pprint.pformat` (CPython 3.13) and `repr` are ported;

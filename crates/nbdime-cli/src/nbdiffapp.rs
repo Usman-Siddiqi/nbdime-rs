@@ -110,7 +110,7 @@ fn handle_diff(
     for source in [&base, &remote] {
         if let Source::Path(path) = source {
             if !osstr::to_path(path).exists() && path != EXPLICIT_MISSING_FILE {
-                writeln!(out, "Missing file {path}")?;
+                writeln!(out, "Missing file {}", osstr::show(path))?;
                 out.flush()?;
                 return Ok(1);
             }
@@ -127,7 +127,7 @@ fn handle_diff(
     if let Some(output) = output {
         // Opened (and truncated) before anything is written, like `open(output, "w")`.
         let mut file = fs::File::create(osstr::to_path(output))
-            .with_context(|| format!("opening {output}"))?;
+            .with_context(|| format!("opening {}", osstr::show(output)))?;
         let text = json::dumps(&diff_to_value(&diff), &DumpOptions::nbdime_diff_file());
         file.write_all(text.as_bytes())?;
     } else {

@@ -65,9 +65,9 @@ pub fn read_notebook(
         Source::Nothing => bail!("cannot read a notebook from None"),
         Source::Path(path) if path == EXPLICIT_MISSING_FILE => return Ok(on_null.notebook()),
         Source::Path(path) => {
-            let bytes =
-                fs::read(crate::osstr::to_path(path)).with_context(|| format!("reading {path}"))?;
-            String::from_utf8(bytes).map_err(|e| anyhow!("{path}: {e}"))?
+            let bytes = fs::read(crate::osstr::to_path(path))
+                .with_context(|| format!("reading {}", crate::osstr::show(path)))?;
+            String::from_utf8(bytes).map_err(|e| anyhow!("{}: {e}", crate::osstr::show(path)))?
         }
         Source::Stream { text, .. } => text.clone(),
     };

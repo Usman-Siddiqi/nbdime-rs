@@ -4,7 +4,8 @@
 use std::ffi::OsStr;
 use std::io::{self, Write};
 
-pub use nbdime_core::fsname::{for_output, from_bytes, to_bytes, to_os, to_path};
+use nbdime_core::fsname::for_output;
+pub use nbdime_core::fsname::{from_bytes, to_bytes, to_os, to_path};
 
 /// An operating system string (an argument, an environment variable) as text.
 pub fn from_os(os: &OsStr) -> String {
@@ -25,45 +26,54 @@ fn os_bytes(os: &OsStr) -> std::borrow::Cow<'_, [u8]> {
     std::borrow::Cow::Owned(os.to_string_lossy().into_owned().into_bytes())
 }
 
+/// A name as `backslashreplace` shows it: each escaped byte as `\udcXX`.
+///
+/// Apply it where an operating system string (a file name, an argument) is formatted into
+/// output, never to a whole stream: notebook text may contain the code points used for escaped
+/// bytes.
+pub fn show(name: &str) -> std::borrow::Cow<'_, str> {
+    for_output(name)
+}
+
 /// `repr(text)`, with escaped bytes shown as the lone surrogates Python has for them.
 pub fn repr(text: &str) -> String {
     let repr = nbdime_core::prettyprint::repr_str(text);
     if !repr.contains("\\U0010f7") {
         return repr;
     }
-    let mut repr = repr;
-    for byte in 0x80..=0xFFu32 {
-        repr = repr.replace(&format!("\\U0010f7{byte:02x}"), &format!("\\udc{byte:02x}"));
-    }
-    repr
-}
-
-/// Writes text to stderr like Python's `backslashreplace` handler; failures are ignored.
-pub fn eprint(text: &str) {
-    let _ = io::stderr().lock().write_all(for_output(text).as_bytes());
-}
-
-/// Stdout as nbdime sets it up (`setup_std_streams`): names with undecodable bytes appear as
-/// `\udcXX`.
-///
-/// Every `write` call must carry whole characters, which `write_all` of a `str` does.
-pub struct StdoutEscaped<W: Write>(pub W);
-
-impl<W: Write> Write for StdoutEscaped<W> {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        // U+10F780.. start with 0xF4 in UTF-8; nothing else needs a look.
-        if buf.contains(&0xF4) {
-            if let Ok(text) = std::str::from_utf8(buf) {
-                self.0.write_all(for_output(text).as_bytes())?;
-                return Ok(buf.len());
+    let mut out = String::with_capacity(repr.len());
+    let mut rest = repr.as_str();
+    while let Some(at) = rest.find('\\') {
+        out.push_str(&rest[..at]);
+        let tail = &rest[at + 1..];
+        // `\\` is a literal backslash and must not start an escape of its own.
+        let escaped = tail
+            .strip_prefix("U0010f7")
+            .and_then(|hex| hex.get(..2))
+            .and_then(|hex| u32::from_str_radix(hex, 16).ok())
+            .filter(|byte| *byte >= 0x80);
+        match escaped {
+            Some(byte) => {
+                out.push_str(&format!("\\udc{byte:02x}"));
+                rest = &tail["U0010f7".len() + 2..];
+            }
+            None => {
+                out.push('\\');
+                let mut next = tail.chars();
+                if let Some(c) = next.next() {
+                    out.push(c);
+                }
+                rest = next.as_str();
             }
         }
-        self.0.write(buf)
     }
+    out.push_str(rest);
+    out
+}
 
-    fn flush(&mut self) -> io::Result<()> {
-        self.0.flush()
-    }
+/// Writes text to stderr; failures are ignored.
+pub fn eprint(text: &str) {
+    let _ = io::stderr().lock().write_all(text.as_bytes());
 }
 
 #[cfg(test)]
@@ -71,11 +81,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn stdout_escapes_the_bytes() {
-        let mut out = StdoutEscaped(Vec::new());
-        out.write_all(from_bytes(b"x\xfey\n").as_bytes()).unwrap();
-        out.write_all("\u{e9}\n".as_bytes()).unwrap();
-        assert_eq!(out.0, "x\\udcfey\n\u{e9}\n".as_bytes());
+    fn names_are_shown_with_backslashreplace_and_text_is_left_alone() {
+        assert_eq!(show(&from_bytes(b"x\xfey")), "x\\udcfey");
+        assert_eq!(show("caf\u{e9}"), "caf\u{e9}");
+    }
+
+    #[test]
+    fn repr_shows_escaped_bytes_but_not_a_literal_backslash_u() {
+        assert_eq!(repr(&from_bytes(b"a\xfe")), "'a\\udcfe'");
+        assert_eq!(repr("\\U0010f7fe"), "'\\\\U0010f7fe'");
+        assert_eq!(repr(&format!("\\{}", from_bytes(b"\xfe"))), "'\\\\\\udcfe'");
     }
 
     #[cfg(unix)]

@@ -585,7 +585,9 @@ impl<'a> Printer<'a> {
         let atime = file_timestamp(afn)?;
         let btime = file_timestamp(bfn)?;
         self.write(&format!(
-            "nbdiff {afn} {bfn}\n--- {afn}  {atime}\n+++ {bfn}  {btime}\n"
+            "nbdiff {afn} {bfn}\n--- {afn}  {atime}\n+++ {bfn}  {btime}\n",
+            afn = crate::fsname::for_output(afn),
+            bfn = crate::fsname::for_output(bfn),
         ));
         let result = self.diff(a, di, "");
         self.finished()?;

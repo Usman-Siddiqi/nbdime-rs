@@ -146,7 +146,7 @@ fn main_merge(
                 Level::Error,
                 "nbmergeapp",
                 35,
-                &format!("Cannot find file '{shown}'"),
+                &format!("Cannot find file '{}'", osstr::show(&shown)),
             );
             return Ok(1);
         }
@@ -190,7 +190,8 @@ fn main_merge(
             let list = Value::List(decisions.iter().map(MergeDecision::to_value).collect());
             let mut text = json::dumps(&list, &DumpOptions::nbdime_diff_file());
             text.push('\n');
-            fs::write(osstr::to_path(mfn), text).with_context(|| format!("writing {mfn}"))?;
+            fs::write(osstr::to_path(mfn), text)
+                .with_context(|| format!("writing {}", osstr::show(mfn)))?;
         } else {
             log_decisions(&b, &decisions, ns, logger, 70)?;
         }
@@ -200,7 +201,7 @@ fn main_merge(
             Level::Info,
             "nbmergeapp",
             74,
-            &format!("Merge result written to {mfn}"),
+            &format!("Merge result written to {}", osstr::show(mfn)),
         );
     } else {
         out.write_all(nbformat::writes(&merged)?.as_bytes())?;
@@ -213,8 +214,8 @@ fn main_merge(
 /// that cannot be serialized leaves an existing file alone.
 fn write_notebook(path: &str, notebook: &Value) -> Result<()> {
     let text = nbformat::writes(notebook)?;
-    let mut file =
-        fs::File::create(osstr::to_path(path)).with_context(|| format!("opening {path}"))?;
+    let mut file = fs::File::create(osstr::to_path(path))
+        .with_context(|| format!("opening {}", osstr::show(path)))?;
     file.write_all(text.as_bytes())?;
     Ok(())
 }
@@ -248,7 +249,10 @@ fn handle_agreed_deletion(
     logger: &Logger,
 ) -> Result<()> {
     if base_fn == EXPLICIT_MISSING_FILE {
-        bail!("sanity check failed: cannot have agreed decision on base {base_fn:?}");
+        bail!(
+            "sanity check failed: cannot have agreed decision on base {:?}",
+            osstr::show(base_fn)
+        );
     }
     let base = read_notebook(&Source::Path(base_fn.to_owned()), Fallback::Minimal, None)?;
     if ns.truthy("decisions") {
@@ -259,12 +263,12 @@ fn handle_agreed_deletion(
     } else if let Some(output_fn) = output_fn {
         if osstr::to_path(output_fn).exists() {
             fs::remove_file(osstr::to_path(output_fn))
-                .with_context(|| format!("removing {output_fn}"))?;
+                .with_context(|| format!("removing {}", osstr::show(output_fn)))?;
             logger.log(
                 Level::Info,
                 "nbmergeapp",
                 105,
-                &format!("Output file deleted: {output_fn}"),
+                &format!("Output file deleted: {}", osstr::show(output_fn)),
             );
         }
     }

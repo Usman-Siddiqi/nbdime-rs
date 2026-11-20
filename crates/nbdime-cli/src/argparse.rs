@@ -373,7 +373,12 @@ impl Parser {
 
     /// The text `parser.error(message)` prints on stderr.
     pub fn error_text(&self, message: &str) -> String {
-        format!("{}\n{}: error: {message}\n", self.usage_text(), self.prog)
+        format!(
+            "{}\n{}: error: {}\n",
+            self.usage_text(),
+            self.prog,
+            crate::osstr::show(message)
+        )
     }
 
     pub fn help_text(&self) -> String {

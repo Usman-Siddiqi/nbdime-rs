@@ -740,13 +740,14 @@ impl Merger<'_> {
 
 /// Merges `base` three ways given the diffs from the base to the local and remote versions.
 ///
-/// `local` and `remote` are not used: the diffs carry everything. Inserted items are aligned
+/// `local` and `remote` only matter for the ids that marker cells must not repeat: the diffs
+/// carry everything else. Inserted items are aligned
 /// with the default notebook predicates, whatever the diffs were made with (upstream copies the
 /// notebook diff configuration, which loses any configured ignores).
 pub fn decide_merge_with_diff(
     base: &Value,
-    _local: &Value,
-    _remote: &Value,
+    local: &Value,
+    remote: &Value,
     local_diff: &[DiffEntry],
     remote_diff: &[DiffEntry],
     strategies: &Strategies,
@@ -758,6 +759,9 @@ pub fn decide_merge_with_diff(
         merging_lines: false,
         ids: MarkerIds::default(),
     };
+    for notebook in [base, local, remote] {
+        merger.ids.avoid_notebook(notebook);
+    }
     let mut decisions = merger.merge(
         Some(base),
         Side::Diff(local_diff),

@@ -135,8 +135,11 @@ fn strategies_arg(args: &Value) -> Result<Strategies> {
         None | Some(Value::Null) => {}
         Some(Value::Object(map)) => {
             for (path, name) in map {
-                let name = name.as_str().context("strategy names must be strings")?;
-                strategies.insert(path, Some(name));
+                let name = match name {
+                    Value::Null => None,
+                    other => Some(other.as_str().context("strategy names must be strings")?),
+                };
+                strategies.insert(path, name);
             }
         }
         Some(_) => bail!("strategies must be an object"),
@@ -214,7 +217,12 @@ fn merge_args(args: &Value) -> Result<Option<MergeArgs>> {
     };
     let defaults = MergeArgs::default();
     Ok(Some(MergeArgs {
-        merge_strategy: optional("merge_strategy")?.unwrap_or(defaults.merge_strategy),
+        // An explicit null is Python's `None`, not the default.
+        merge_strategy: if given.contains_key("merge_strategy") {
+            optional("merge_strategy")?
+        } else {
+            defaults.merge_strategy
+        },
         input_strategy: optional("input_strategy")?,
         output_strategy: optional("output_strategy")?,
         ignore_transients: given

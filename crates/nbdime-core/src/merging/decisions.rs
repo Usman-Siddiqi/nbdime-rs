@@ -950,22 +950,24 @@ fn the_only_key(local: &Diff, remote: &Diff) -> Result<Key, MergeError> {
     }
 }
 
-/// The diff that a decision stands for, to be applied to `base`.
-pub fn resolve_action(base: &Value, decision: &MergeDecision) -> Result<Diff, MergeError> {
+/// The diff that a decision stands for, to be applied to `base`. A side the decision does not
+/// have is passed on as `None` for the actions that only copy it (Python's `copy.copy(None)`);
+/// whoever uses the result decides what that means.
+pub fn resolve_action(base: &Value, decision: &MergeDecision) -> Result<Option<Diff>, MergeError> {
     match &decision.action {
-        Action::Base => Ok(Vec::new()),
-        Action::Local | Action::Either => Ok(decision.local()?.clone()),
-        Action::Remote => Ok(decision.remote()?.clone()),
-        Action::Custom => Ok(decision.custom()?.clone()),
+        Action::Base => Ok(Some(Vec::new())),
+        Action::Local | Action::Either => Ok(decision.local_diff.clone()),
+        Action::Remote => Ok(decision.remote_diff.clone()),
+        Action::Custom => Ok(decision.custom_diff.clone()),
         Action::LocalThenRemote => {
             let mut diff = decision.local()?.clone();
             diff.extend(decision.remote()?.iter().cloned());
-            Ok(diff)
+            Ok(Some(diff))
         }
         Action::RemoteThenLocal => {
             let mut diff = decision.remote()?.clone();
             diff.extend(decision.local()?.iter().cloned());
-            Ok(diff)
+            Ok(Some(diff))
         }
         action @ (Action::Clear | Action::Remove) => {
             let key = the_only_key(decision.local()?, decision.remote()?)?;
@@ -974,21 +976,24 @@ pub fn resolve_action(base: &Value, decision: &MergeDecision) -> Result<Diff, Me
                     (Value::Str(_), _) => make_cleared_value(&item_value(base, &key)?),
                     _ => make_cleared_value(get_item(base, &key)?),
                 };
-                Ok(vec![DiffEntry::replace(key, cleared)])
+                Ok(Some(vec![DiffEntry::replace(key, cleared)]))
             } else if matches!(base, Value::List(_) | Value::Str(_)) {
                 let Key::Index(i) = key else {
                     return invalid("list key must be integer");
                 };
-                Ok(vec![DiffEntry::removerange(i, 1)])
+                Ok(Some(vec![DiffEntry::removerange(i, 1)]))
             } else {
-                Ok(vec![DiffEntry::remove(key)])
+                Ok(Some(vec![DiffEntry::remove(key)]))
             }
         }
         Action::ClearAll => match base {
-            Value::Object(map) => Ok(map.keys().map(|k| DiffEntry::remove(k.as_str())).collect()),
-            Value::List(items) => Ok(vec![DiffEntry::removerange(0, items.len())]),
-            Value::Str(s) => Ok(vec![DiffEntry::removerange(0, s.chars().count())]),
-            _ => invalid("clear_all needs a list, dict or string"),
+            Value::Object(map) => Ok(Some(
+                map.keys().map(|k| DiffEntry::remove(k.as_str())).collect(),
+            )),
+            Value::List(items) => Ok(Some(vec![DiffEntry::removerange(0, items.len())])),
+            Value::Str(s) => Ok(Some(vec![DiffEntry::removerange(0, s.chars().count())])),
+            // Upstream falls off the end of the function.
+            _ => Ok(None),
         },
         Action::TakeMax => {
             let (local, remote) = (decision.local()?, decision.remote()?);
@@ -1014,9 +1019,9 @@ pub fn resolve_action(base: &Value, decision: &MergeDecision) -> Result<Diff, Me
                 }
             }
             if bval.py_eq(max) {
-                Ok(Vec::new())
+                Ok(Some(Vec::new()))
             } else {
-                Ok(vec![DiffEntry::replace(key, max.clone())])
+                Ok(Some(vec![DiffEntry::replace(key, max.clone())]))
             }
         }
         Action::Other(name) => Err(MergeError::NotImplemented(name.clone())),
@@ -1093,19 +1098,47 @@ pub fn apply_decisions(base: &Value, decisions: &[MergeDecision]) -> Result<Valu
     /// The diffs collected for one path, applied together.
     struct Group {
         path: Vec<Key>,
-        diffs: Diff,
+        /// `None` is Python's `None` (a decision that has no such diff), which fails wherever it
+        /// is used, unless a `clear_all` replaces the collected diffs first.
+        diffs: Option<Diff>,
         clear_all: bool,
+        /// Whether a second decision joined the group, which upstream combines the patches
+        /// for (a group of one decision is patched as it is). Combining is deferred to the
+        /// flush: it is idempotent and stable, so one pass gives what a pass per decision does.
+        combine: bool,
     }
 
     fn flush(merged: &mut Value, group: Group) -> Result<(), MergeError> {
+        let Some(mut diffs) = group.diffs else {
+            return invalid("'NoneType' object is not iterable");
+        };
+        if group.combine {
+            diffs = combine_patches(diffs)?;
+        }
         let resolved = resolve_path(merged, &group.path)?;
-        let patched = patch(resolved, &group.diffs)?;
+        let patched = patch(resolved, &diffs)?;
         let mut target = merged;
         for key in &group.path {
             target = get_item_mut(target, key)?;
         }
         *target = patched;
         Ok(())
+    }
+
+    /// `resolve_action` followed by wrapping the result in the patches of `line`.
+    fn resolve_in(
+        resolved: &Value,
+        md: &MergeDecision,
+        line: &[Key],
+    ) -> Result<Option<Diff>, MergeError> {
+        let diffs = resolve_action(resolved, md)?;
+        if line.is_empty() {
+            return Ok(diffs);
+        }
+        match diffs {
+            Some(diffs) => Ok(Some(push_path(line, diffs))),
+            None => assertion("Patch op needs a diff sequence"),
+        }
     }
 
     let mut merged = base.clone();
@@ -1117,29 +1150,34 @@ pub fn apply_decisions(base: &Value, decisions: &[MergeDecision]) -> Result<Valu
                 // A clear_all on the parent makes every other decision on it moot.
                 if !g.clear_all {
                     if md.action == Action::ClearAll {
+                        if g.combine {
+                            // The combine that would have failed upstream still fails.
+                            if let Some(diffs) = g.diffs.take() {
+                                combine_patches(diffs)?;
+                            }
+                        }
                         g.clear_all = true;
-                        g.diffs.clear();
+                        g.diffs = Some(Vec::new());
                     }
-                    let mut ad = resolve_action(resolve_path(&merged, path)?, md)?;
-                    if !line.is_empty() {
-                        ad = push_path(line, ad);
-                    }
-                    g.diffs.extend(ad);
-                    g.diffs = combine_patches(std::mem::take(&mut g.diffs))?;
+                    let ad = resolve_in(resolve_path(&merged, path)?, md, line)?;
+                    let (Some(mut diffs), Some(ad)) = (g.diffs.take(), ad) else {
+                        return invalid("can only concatenate list (not \"NoneType\") to list");
+                    };
+                    diffs.extend(ad);
+                    g.diffs = Some(diffs);
+                    g.combine = true;
                 }
             }
             _ => {
                 if let Some(previous) = group.take() {
                     flush(&mut merged, previous)?;
                 }
-                let mut diffs = resolve_action(resolve_path(&merged, path)?, md)?;
-                if !line.is_empty() {
-                    diffs = push_path(line, diffs);
-                }
+                let diffs = resolve_in(resolve_path(&merged, path)?, md, line)?;
                 group = Some(Group {
                     path: path.to_vec(),
                     diffs,
                     clear_all: md.action == Action::ClearAll,
+                    combine: false,
                 });
             }
         }
@@ -1561,6 +1599,120 @@ mod tests {
         let d3 = decision(&[key("a")], Action::Local, ins, "");
         let out = apply(r#"{"a":[1,2]}"#, &[d1, d2, d3]).unwrap();
         assert_eq!(out, v(r#"{"a":[]}"#));
+    }
+
+    #[test]
+    fn combining_once_matches_combining_after_every_decision() {
+        let base = v(r#"{"a":[0,1,2,3,4,5],"b":{"k":1,"m":2,"n":3}}"#);
+        let sides = [
+            r#"[{"op":"patch","key":"a","diff":[{"op":"addrange","key":4,"valuelist":["p"]}]}]"#,
+            r#"[{"op":"patch","key":"b","diff":[{"op":"replace","key":"n","value":9}]}]"#,
+            r#"[{"op":"patch","key":"a","diff":[{"op":"addrange","key":1,"valuelist":["q"]},{"op":"removerange","key":2,"length":1}]}]"#,
+            r#"[{"op":"patch","key":"b","diff":[{"op":"remove","key":"k"}]},{"op":"patch","key":"a","diff":[{"op":"addrange","key":0,"valuelist":["r"]}]}]"#,
+        ];
+        let decisions: Vec<_> = sides
+            .iter()
+            .map(|d| decision(&[], Action::Local, d, ""))
+            .collect();
+        let mut reference: Option<Diff> = None;
+        for md in &decisions {
+            let ad = resolve_action(&base, md).unwrap().unwrap();
+            reference = Some(match reference {
+                None => ad,
+                Some(mut acc) => {
+                    acc.extend(ad);
+                    combine_patches(acc).unwrap()
+                }
+            });
+        }
+        let expected = patch(&base, &reference.unwrap()).unwrap();
+        assert_eq!(apply_decisions(&base, &decisions).unwrap(), expected);
+    }
+
+    #[test]
+    fn clear_all_still_fails_on_an_earlier_uncombinable_group() {
+        let by_index = r#"[{"op":"addrange","key":0,"valuelist":["x"]}]"#;
+        let by_name = r#"[{"op":"remove","key":"k"}]"#;
+        let d1 = decision(&[key("a")], Action::Local, by_index, "");
+        let d2 = decision(&[key("a")], Action::Local, by_name, "");
+        let d3 = decision(&[key("a")], Action::ClearAll, "", "");
+        assert!(apply(r#"{"a":[1,2]}"#, &[d1.clone(), d2.clone()]).is_err());
+        // Upstream combines after the second decision, before the clear_all drops it.
+        assert!(apply(r#"{"a":[1,2]}"#, &[d1, d2, d3]).is_err());
+    }
+
+    #[test]
+    fn many_one_sided_inserts_on_one_path_apply() {
+        let n = 20_000usize;
+        let base = Value::Object(
+            [("a".to_owned(), Value::List(vec![Value::from(0); n]))]
+                .into_iter()
+                .collect(),
+        );
+        let decisions: Vec<_> = (0..n)
+            .map(|i| {
+                let ins = format!(r#"[{{"op":"addrange","key":{i},"valuelist":[1]}}]"#);
+                decision(&[key("a")], Action::Local, &ins, "")
+            })
+            .collect();
+        let merged = apply_decisions(&base, &decisions).unwrap();
+        assert_eq!(merged.get("a").unwrap().as_list().unwrap().len(), 2 * n);
+    }
+
+    #[test]
+    fn a_null_diff_only_fails_where_it_is_used() {
+        let remove_c = r#"[{"op":"remove","key":"c"}]"#;
+        let add_n = r#"[{"op":"add","key":"n","value":""}]"#;
+        let null_local = decision(&[], Action::Local, "", remove_c);
+        let clear_all = decision(&[], Action::ClearAll, add_n, "");
+        // The clear_all replaces the collected diffs, `None` included.
+        assert_eq!(
+            apply(r#"{"c":1}"#, &[null_local.clone(), clear_all]).unwrap(),
+            v("{}")
+        );
+        // Used as it is, or joined by a decision that is no clear_all, it fails.
+        assert!(apply(r#"{"c":1}"#, std::slice::from_ref(&null_local)).is_err());
+        let more = decision(&[], Action::Remote, "", remove_c);
+        assert!(apply(r#"{"c":1}"#, &[null_local.clone(), more.clone()]).is_err());
+        assert!(apply(r#"{"c":1}"#, &[more, null_local]).is_err());
+        // `local_then_remote` adds the diffs, which fails for `None`.
+        let sum = decision(&[], Action::LocalThenRemote, "", remove_c);
+        assert!(apply(r#"{"c":1}"#, &[sum]).is_err());
+        // So does wrapping it in the patches of a string path.
+        let path = [key("a"), Key::Index(0), Key::Index(0)];
+        let line = decision(&path, Action::Local, "", remove_c);
+        assert!(apply(r#"{"a":["xy"]}"#, &[line]).is_err());
+        assert_eq!(
+            split_string_path(&v(r#"{"a":["xy"]}"#), &path)
+                .unwrap()
+                .1
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn decisions_from_decide_merge_apply_again() {
+        use crate::merging::{decide_merge, Strategies};
+        let base = Value::from("bbabbbbbbbbbaaabc\u{b}");
+        let local = Value::from("baaabbabbbabbbaaabbbbbaaabababc\u{b}");
+        let remote = Value::from("for i in range(10):\n");
+        let mut strategies = Strategies::new();
+        strategies.insert("/*/*", Some("inline-source"));
+        let decisions = decide_merge(&base, &local, &remote, &strategies).unwrap();
+        assert!(decisions.iter().any(|d| d
+            .remote_diff
+            .as_ref()
+            .is_some_and(|diff| diff.iter().any(|e| matches!(e.op, Op::ParentDeleted)))));
+        let reread: Vec<_> = decisions
+            .iter()
+            .map(|d| MergeDecision::from_value(&d.to_value()).unwrap())
+            .collect();
+        assert_eq!(reread, decisions);
+        assert_eq!(
+            apply_decisions(&base, &reread).unwrap(),
+            Value::from("for i in range(10):\nbbabbbbbbbbbaaabc\u{b}")
+        );
     }
 
     #[test]

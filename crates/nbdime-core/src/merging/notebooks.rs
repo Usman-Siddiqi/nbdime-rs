@@ -11,8 +11,9 @@ use super::MergeError;
 /// How a notebook merge resolves conflicts (the `nbmerge` options).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MergeArgs {
-    /// `inline`, `use-base`, `use-local`, `use-remote` or `union`.
-    pub merge_strategy: String,
+    /// `inline`, `use-base`, `use-local`, `use-remote` or `union`; `None` sets no strategy
+    /// (what upstream's `merge_strategy=None` does).
+    pub merge_strategy: Option<String>,
     /// Strategy for sources and attachments; the merge strategy if unset.
     pub input_strategy: Option<String>,
     /// Strategy for outputs; the merge strategy if unset. Also `remove` and `clear-all`.
@@ -24,7 +25,7 @@ pub struct MergeArgs {
 impl Default for MergeArgs {
     fn default() -> Self {
         MergeArgs {
-            merge_strategy: "inline".into(),
+            merge_strategy: Some("inline".into()),
             input_strategy: None,
             output_strategy: None,
             ignore_transients: true,
@@ -60,26 +61,29 @@ pub fn notebook_merge_strategies(args: Option<&MergeArgs>) -> Strategies {
     // edited by hand. Sources and outputs follow the merge strategy unless set separately.
     let default = MergeArgs::default();
     let args = args.unwrap_or(&default);
-    let merge_strategy = args.merge_strategy.as_str();
-    let non_empty = |s: &Option<String>| s.clone().filter(|s| !s.is_empty());
-    let input_strategy = non_empty(&args.input_strategy).unwrap_or_else(|| merge_strategy.into());
-    let output_strategy = non_empty(&args.output_strategy).unwrap_or_else(|| merge_strategy.into());
-    let mut metadata_strategy = (merge_strategy != "union").then_some(merge_strategy);
+    let merge_strategy = args.merge_strategy.as_deref();
+    let input_strategy = or_merge(&args.input_strategy, merge_strategy);
+    let output_strategy = or_merge(&args.output_strategy, merge_strategy);
+    let mut metadata_strategy = if merge_strategy == Some("union") {
+        None
+    } else {
+        merge_strategy
+    };
 
     match merge_strategy {
-        "inline" => strategies.insert("/cells", Some("inline-cells")),
-        "union" => strategies.insert("/cells", Some("union")),
-        other => strategies.insert("/", Some(other)),
+        Some("inline") => strategies.insert("/cells", Some("inline-cells")),
+        Some("union") => strategies.insert("/cells", Some("union")),
+        other => strategies.insert("/", other),
     }
 
     // `inline` becomes a specific strategy for each field.
-    let (source_strategy, attachments_strategy) = if input_strategy == "inline" {
-        ("inline-source".to_owned(), "inline-attachments".to_owned())
+    let (source_strategy, attachments_strategy) = if input_strategy == Some("inline") {
+        (Some("inline-source"), Some("inline-attachments"))
     } else {
-        (input_strategy.clone(), input_strategy)
+        (input_strategy, input_strategy)
     };
-    let outputs_strategy = if output_strategy == "inline" {
-        "inline-outputs".to_owned()
+    let outputs_strategy = if output_strategy == Some("inline") {
+        Some("inline-outputs")
     } else {
         output_strategy
     };
@@ -90,10 +94,18 @@ pub fn notebook_merge_strategies(args: Option<&MergeArgs>) -> Strategies {
     strategies.insert("/metadata", metadata_strategy);
     strategies.insert("/cells/*/metadata", metadata_strategy);
     strategies.insert("/cells/*/outputs/*/metadata", metadata_strategy);
-    strategies.insert("/cells/*/source", Some(&source_strategy));
-    strategies.insert("/cells/*/attachments", Some(&attachments_strategy));
-    strategies.insert("/cells/*/outputs", Some(&outputs_strategy));
+    strategies.insert("/cells/*/source", source_strategy);
+    strategies.insert("/cells/*/attachments", attachments_strategy);
+    strategies.insert("/cells/*/outputs", outputs_strategy);
     strategies
+}
+
+/// `strategy or merge_strategy`: an empty string falls back too.
+fn or_merge<'a>(strategy: &'a Option<String>, merge_strategy: Option<&'a str>) -> Option<&'a str> {
+    strategy
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .or(merge_strategy)
 }
 
 /// The decisions that merge the notebooks `local` and `remote` from their shared ancestor
@@ -129,6 +141,7 @@ pub fn merge_notebooks(
 mod tests {
     use super::*;
     use crate::json::parse;
+    use crate::merging::Action;
 
     fn v(text: &str) -> Value {
         parse(text).unwrap()
@@ -156,7 +169,7 @@ mod tests {
     #[test]
     fn explicit_arguments() {
         let args = MergeArgs {
-            merge_strategy: "use-local".into(),
+            merge_strategy: Some("use-local".into()),
             input_strategy: Some("use-remote".into()),
             output_strategy: Some("clear-all".into()),
             ignore_transients: false,
@@ -171,7 +184,7 @@ mod tests {
         assert_eq!(s.get("/cells/0/execution_count"), None);
 
         let union = MergeArgs {
-            merge_strategy: "union".into(),
+            merge_strategy: Some("union".into()),
             ..MergeArgs::default()
         };
         let s = notebook_merge_strategies(Some(&union));
@@ -240,12 +253,19 @@ mod tests {
             .as_str()
             .unwrap()
             .to_owned();
-        assert_eq!(
-            source,
-            "<<<<<<< local\nx = 2\n=======\nx = 3\n>>>>>>> remote"
+        // The text between the markers depends on the renderer (git, diff3 or the built-in one;
+        // `text.rs` pins each of them).
+        assert!(source.starts_with("<<<<<<< local\n"), "{source:?}");
+        assert!(
+            source.contains("x = 2") && source.contains("x = 3"),
+            "{source:?}"
+        );
+        assert!(
+            source.contains("=======") && source.contains(">>>>>>> remote"),
+            "{source:?}"
         );
         let args = MergeArgs {
-            merge_strategy: "use-remote".into(),
+            merge_strategy: Some("use-remote".into()),
             ..MergeArgs::default()
         };
         let (merged, decisions) =
@@ -255,5 +275,39 @@ mod tests {
             merged.get("cells").unwrap().as_list().unwrap()[0].get("source"),
             Some(&Value::from("x = 3"))
         );
+    }
+
+    #[test]
+    fn null_merge_strategy_sets_no_strategy() {
+        let args = MergeArgs {
+            merge_strategy: None,
+            ..MergeArgs::default()
+        };
+        let s = notebook_merge_strategies(Some(&args));
+        for path in [
+            "/",
+            "/cells",
+            "/metadata",
+            "/cells/0/source",
+            "/cells/0/outputs",
+        ] {
+            assert_eq!(s.get(path), None, "{path}");
+        }
+        assert_eq!(s.get("/nbformat"), Some("fail"));
+
+        // Without a strategy the conflicting inserts keep the base (here: no cells).
+        let md = |source: &str| {
+            format!(r#"{{"id":"m","cell_type":"markdown","source":"{source}","metadata":{{}}}}"#)
+        };
+        let base = notebook("[]");
+        let local = notebook(&format!("[{}]", md("alpha beta")));
+        let remote = notebook(&format!("[{}]", md("zzz qqq www")));
+        let config = NotebookDiffConfig::new();
+        let (merged, decisions) =
+            merge_notebooks(&base, &local, &remote, Some(&args), &config).unwrap();
+        assert_eq!(merged.get("cells").unwrap().as_list().unwrap().len(), 0);
+        assert_eq!(decisions.len(), 1);
+        assert_eq!(decisions[0].action, Action::Base);
+        assert!(decisions[0].conflict);
     }
 }

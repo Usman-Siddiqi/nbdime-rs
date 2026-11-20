@@ -403,6 +403,8 @@ pub fn entry_from_value(v: &Value) -> Result<DiffEntry, DiffFormatError> {
         Some("patch") => Op::Patch {
             diff: diff_from_value(field("diff")?)?,
         },
+        // Merge decisions carry these; patching rejects them.
+        Some("parent_deleted") => Op::ParentDeleted,
         _ => return err(format!("Unknown diff op '{:?}'.", m.get("op"))),
     };
     Ok(DiffEntry { key, op })
@@ -470,5 +472,13 @@ mod tests {
         let nested_bad = vec![DiffEntry::patch("x", bad)];
         assert!(validate_diff(&nested_bad, false).is_ok());
         assert!(validate_diff(&nested_bad, true).is_err());
+    }
+
+    #[test]
+    fn parent_deleted_entries_round_trip() {
+        let text = r#"[{"key":"a","op":"parent_deleted"}]"#;
+        let diff = diff_from_value(&parse(text).unwrap()).unwrap();
+        assert_eq!(diff, [DiffEntry::parent_deleted("a")]);
+        assert_eq!(dumps(&diff_to_value(&diff), &DumpOptions::compact()), text);
     }
 }

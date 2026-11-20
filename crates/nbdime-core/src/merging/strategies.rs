@@ -232,25 +232,52 @@ impl Default for MarkerIds {
 }
 
 impl MarkerIds {
+    /// Marks the id of `cell`, or of each cell if it is a list of them, as taken.
     fn avoid(&mut self, cell: &Value) {
-        if let Some(Value::Str(id)) = cell.get("id") {
-            self.generator.taken.insert(id.clone());
+        match cell {
+            Value::List(items) => items.iter().for_each(|c| self.avoid(c)),
+            _ => {
+                if let Some(Value::Str(id)) = cell.get("id") {
+                    self.generator.taken.insert(id.clone());
+                }
+            }
         }
     }
 
-    /// Marks the ids of `cells` and of the cells that `decisions` insert as taken.
+    /// Marks every cell id of the notebook `nb` as taken.
+    pub(super) fn avoid_notebook(&mut self, nb: &Value) {
+        if let Some(cells) = nb.get("cells") {
+            self.avoid(cells);
+        }
+    }
+
+    /// Marks the ids that `diff` introduces (in inserted or replaced cells, and replaced ids) as
+    /// taken.
+    fn avoid_diff(&mut self, diff: &[DiffEntry]) {
+        for e in diff {
+            match &e.op {
+                Op::Add { value } | Op::Replace { value } => match (&e.key, value) {
+                    (Key::Name(name), Value::Str(id)) if name == "id" => {
+                        self.generator.taken.insert(id.clone());
+                    }
+                    _ => self.avoid(value),
+                },
+                Op::AddRange { valuelist } => self.avoid(valuelist),
+                Op::Patch { diff } => self.avoid_diff(diff),
+                Op::Remove | Op::RemoveRange { .. } | Op::ParentDeleted => {}
+            }
+        }
+    }
+
+    /// Marks the ids of `cells` and every id that `decisions` bring in as taken.
     fn avoid_all(&mut self, cells: &[Value], decisions: &[MergeDecision]) {
         cells.iter().for_each(|c| self.avoid(c));
         for d in decisions {
             let diffs = [&d.local_diff, &d.remote_diff, &d.custom_diff];
-            for e in diffs.into_iter().flatten().flatten() {
-                if let Op::AddRange {
-                    valuelist: Value::List(items),
-                } = &e.op
-                {
-                    items.iter().for_each(|c| self.avoid(c));
-                }
-            }
+            diffs
+                .into_iter()
+                .flatten()
+                .for_each(|diff| self.avoid_diff(diff));
         }
     }
 
@@ -650,15 +677,8 @@ pub fn resolve_strategy_inline_outputs(
             return invalid("list index must be an integer");
         };
         let (local_diff, remote_diff) = collect_diffs(base_path, &decs)?;
-        let base_output = if outputs.is_empty() {
-            None
-        } else {
-            Some(
-                outputs
-                    .get(index)
-                    .ok_or_else(|| MergeError::Invalid("list index out of range".into()))?,
-            )
-        };
+        // A conflict appended after the last output has no base output (F-027).
+        let base_output = outputs.get(index);
         let (inlined, keep_base) =
             make_inline_output_conflict(base_output, &local_diff, &remote_diff)?;
         let mut custom_diff = vec![DiffEntry::addrange(index, Value::List(inlined))];
@@ -1211,6 +1231,30 @@ mod tests {
     }
 
     #[test]
+    fn inline_outputs_conflict_appended_after_the_last_output_has_no_base() {
+        let base = v(r#"[{"output_type":"stream","name":"stdout","text":"a"}]"#);
+        let append = |text: &str| {
+            diff(&format!(
+                r#"[{{"op":"addrange","key":1,"valuelist":[{{"output_type":"stream","name":"stdout","text":"{text}"}}]}}]"#
+            ))
+        };
+        let mut b = MergeDecisionBuilder::new();
+        b.conflict(
+            vec![key("outputs")],
+            Some(append("L")),
+            Some(append("R")),
+            None,
+        )
+        .unwrap();
+        resolve_strategy_inline_outputs(&[key("outputs")], base.as_list().unwrap(), &mut b)
+            .unwrap();
+        let d = &b.decisions[0];
+        assert!(d.conflict);
+        // Only inserts, so the base stays and nothing is removed.
+        assert_eq!(d.custom_diff.as_ref().unwrap().len(), 1);
+    }
+
+    #[test]
     fn marker_cells_have_distinct_deterministic_ids() {
         let mut ids = MarkerIds::default();
         ids.avoid(&v(r#"{"id":"abcd1234"}"#));
@@ -1232,6 +1276,51 @@ mod tests {
             a.get("source").unwrap().as_str().unwrap(),
             "<span style=\"color:red\"><b><<<<<<< local</b></span>"
         );
+    }
+
+    #[test]
+    fn marker_ids_avoid_every_id_the_merge_can_bring_in() {
+        let id_of = |ids: &mut MarkerIds| {
+            let cell = ids.cell_marker("<<<<<<< local", (0, 0));
+            cell.get("id").unwrap().as_str().unwrap().to_owned()
+        };
+        let first = id_of(&mut MarkerIds::default());
+        let cell = |id: &str| format!(r#"{{"id":"{id}","cell_type":"code","source":""}}"#);
+
+        let mut local_only = MarkerIds::default();
+        local_only.avoid_notebook(&v(&format!(r#"{{"cells":[{}]}}"#, cell(&first))));
+        assert_ne!(id_of(&mut local_only), first);
+
+        let diffs = [
+            format!(
+                r#"[{{"op":"addrange","key":0,"valuelist":[{}]}}]"#,
+                cell(&first)
+            ),
+            format!(
+                r#"[{{"op":"patch","key":0,"diff":[{{"op":"replace","key":"id","value":"{first}"}}]}}]"#
+            ),
+            format!(r#"[{{"op":"replace","key":0,"value":{}}}]"#, cell(&first)),
+            format!(
+                r#"[{{"op":"patch","key":"cells","diff":[{{"op":"add","key":"id","value":"{first}"}}]}}]"#
+            ),
+        ];
+        for text in diffs {
+            let mut ids = MarkerIds::default();
+            ids.avoid_all(&[], &[decision_with_diffs(diff(&text))]);
+            assert_ne!(id_of(&mut ids), first, "{text}");
+        }
+    }
+
+    fn decision_with_diffs(local: Diff) -> MergeDecision {
+        let mut b = MergeDecisionBuilder::new();
+        b.add_decision(
+            vec![],
+            Action::Local,
+            Some(local),
+            Some(vec![]),
+            crate::merging::decisions::Extras::default(),
+        );
+        b.decisions.remove(0)
     }
 
     #[test]

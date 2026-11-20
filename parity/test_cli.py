@@ -86,23 +86,57 @@ def _side(case, which, root):
     return args, out
 
 
+def _setup_dir(case, which, root):
+    return root / ("setup-%s-%d" % (which, case["n"]))
+
+
 def run_pair(case, root, env):
-    """Returns (upstream, ours), each (code, stdout, stderr, outfile bytes or None)."""
+    """Returns (upstream, ours), each (code, stdout, stderr, outfile bytes or None, args).
+
+    Optional case keys: `env`, `unset`, `cwd`, `stdin`; `setup(dir)` builds a fresh directory per
+    side (`{dir}` in args and env values, `subdir` for the cwd inside it); `files` lists paths
+    inside it whose contents are compared after the run; `path_bins` puts the side's binaries
+    first on PATH (for git calling drivers and filters by name); cmd "git" runs git itself;
+    `ref_binary` replaces upstream's executable (for entry points upstream installs no script for).
+    """
     results = []
     for which, bindir in (("ref", REF_BIN), ("ours", OUR_BIN)):
         args, out = _side(case, which, root)
         if out.exists():
             out.unlink()
+        cwd = case.get("cwd", root)
+        extra_env = dict(case.get("env", {}))
+        if "setup" in case:
+            d = _setup_dir(case, which, root)
+            if d.exists():
+                shutil.rmtree(d)
+            d.mkdir()
+            case["setup"](d)
+            cwd = d / case.get("subdir", "")
+            args = [a.replace("{dir}", str(d)) for a in args]
+            extra_env = {k: v.replace("{dir}", str(d)) for k, v in extra_env.items()}
         cmd = case["cmd"]
         argv = args
         if cmd.startswith("nbdime "):
             argv = [cmd.split(" ", 1)[1]] + args
             cmd = "nbdime"
-        cenv = dict(env, **case.get("env", {}))
+        cenv = dict(env, **extra_env)
         for k in case.get("unset", ()):
             cenv.pop(k, None)
-        code, so, se = _run(bindir / cmd, argv, case.get("cwd", root), cenv, case.get("stdin"))
-        results.append((code, so, se, out.read_bytes() if out.exists() else None, args))
+        if case.get("path_bins"):
+            cenv["PATH"] = str(bindir) + os.pathsep + cenv["PATH"]
+        binary = shutil.which("git") if cmd == "git" else bindir / cmd
+        if which == "ref" and "ref_binary" in case:
+            binary = case["ref_binary"]
+        code, so, se = _run(binary, argv, cwd, cenv, case.get("stdin"))
+        data = out.read_bytes() if out.exists() else None
+        if "files" in case:
+            parts = [] if data is None else [b"{out}\n" + data]
+            for rel in case["files"]:
+                f = cwd / rel
+                parts.append(rel.encode() + b"\n" + (f.read_bytes() if f.exists() else b"<missing>"))
+            data = b"\0".join(parts)
+        results.append((code, so, se, data, args))
     return results
 
 
@@ -118,11 +152,23 @@ def _stderr_policy(case, ref):
 
 
 def _unside(case, which, result, root):
-    """Each side writes its own output file; its path may appear in messages."""
+    """Each side writes its own output file and setup directory; their paths may appear in
+    messages. `mask` is a list of (regex, replacement) bytes pairs for run-specific text."""
     _, out = _side(case, which, root)
     code, so, se, data, args = result
-    path = str(out).encode()
-    return code, so.replace(path, b"{out}"), se.replace(path, b"{out}"), data, args
+    subs = [(str(out).encode(), b"{out}")]
+    if "setup" in case:
+        subs.append((str(_setup_dir(case, which, root)).encode(), b"{dir}"))
+
+    def clean(b):
+        if b is None:
+            return b
+        for old, new in subs:
+            b = b.replace(old, new)
+        for pat, rep in case.get("mask", ()):
+            b = re.sub(pat, rep, b)
+        return b
+    return code, clean(so), clean(se), clean(data), args
 
 
 def check_cli(cases, root, env, min_cases):

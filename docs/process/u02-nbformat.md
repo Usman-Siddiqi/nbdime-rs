@@ -63,11 +63,21 @@ Details that are easy to get wrong:
      gets a new id from `gen(cell without its id)` with the same suffix rule, in place.
   The same cell content therefore gets the same id wherever it sits, which keeps diffs of two
   such notebooks free of spurious id changes. Applies to writing too.
+  3. Writing repairs ids before it splits lines and strips transient metadata, but the hash input
+     is always the cell as `reads` returns it: on a copy of the cell, `source`, attachments and
+     outputs are rejoined and `metadata.trusted` is removed first (best effort: a cell that
+     cannot be rejoined cannot be read back, and any deterministic form will do). So `writes` of
+     the same cell given with `"source": "s"`, `"source": ["s"]` or `"metadata": {"trusted":
+     true}` generates the same id, equal to what `reads` generates for the written file.
+  4. The suffix sequence depends only on the hash of the content, and the set of taken ids only
+     grows, so implementations remember the next suffix to try per content hash: repairing n
+     identical cells is O(n), not O(n^2).
 - **Q-002, BOM**: `reads` ignores one leading U+FEFF. The JSON layer still rejects it.
 - **F-012, versions**: only `nbformat == 4` (an integer, not `4.0` or `true`) is supported.
   Anything else, including a missing `nbformat` key (upstream treats that as v1), is an error
-  whose message names the version and suggests converting with `jupyter nbconvert --to notebook`
-  or `nbformat`'s `convert`.
+  whose message names the version. For 1 to 3 it suggests converting with
+  `jupyter nbconvert --to notebook`; for 5 and above it says the notebook is newer; for the
+  rest (`4.0`, `true`, a string, a missing key, ...) it says `"nbformat"` must be the integer 4.
 
 ## Dev tool functions (fixed by the parity suite)
 

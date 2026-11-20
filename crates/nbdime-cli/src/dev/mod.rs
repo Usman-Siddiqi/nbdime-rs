@@ -9,6 +9,7 @@ use nbdime_core::diff_utils::{flatten_list_of_string_diff, StrOrLines};
 use nbdime_core::diffing::{self, snakes::compute_snakes_multilevel};
 use nbdime_core::difflib::SequenceMatcher;
 use nbdime_core::json::{self, DumpOptions};
+use nbdime_core::nbformat;
 use nbdime_core::patch::patch;
 use nbdime_core::{Int, Value};
 
@@ -54,6 +55,8 @@ pub fn dispatch(name: &str, args: &Value) -> Result<Value> {
             Ok(patch(arg(args, "obj")?, &diff)?)
         }
         "flatten_list_of_string_diff" => flatten(args),
+        "nbformat.reads" => Ok(nbformat::reads(str_arg(args, "text")?)?),
+        "nbformat.writes" => Ok(Value::from(nbformat::writes(arg(args, "nb")?)?)),
         "diff" => {
             let diff = diffing::diff(arg(args, "a")?, arg(args, "b")?)?;
             Ok(diff_to_value(&diff))

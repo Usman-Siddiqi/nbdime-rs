@@ -379,16 +379,27 @@ doubled final newline, and a common last line that is repeated after the conflic
   as the code points U+10F780..U+10F7FF (the analogue of `surrogateescape`) and written back as the
   original bytes when a path is opened. Upstream reconfigures stdout and stderr with
   `backslashreplace`, so such a name prints as `\udcXX` on both streams; the port does the same
-  (this overrides the earlier plan to emit raw bytes on stdout). A genuine character in that
-  private-use range is indistinguishable from an escaped byte.
-- **Stack**: the interpreter runs on a thread with a 512 MiB stack, falling back to smaller sizes
-  (128, 32, 8, 2 MiB) and finally the main thread when `ulimit -v` or similar refuses the mapping.
+  (this overrides the earlier plan to emit raw bytes on stdout). The escaping is applied where a
+  name or argument is formatted (diff headers, `Missing file`, log and error messages, the
+  mergetool `repr`), never to a stream, so notebook text in that private-use range is printed
+  unchanged. A genuine character of that range inside a name is indistinguishable from an escaped
+  byte, and prints as `\udcXX`.
+- **Undecodable file names inside a repository** (a revision diff, or the working tree against a
+  revision): upstream's GitPython stdout pump crashes on the name (a traceback on stderr, empty
+  stdout, exit status 0). nbdime-rs prints the correct diff instead. Deliberate deviation; it looks
+  like an upstream bug (not reported; ask the owner first).
+- **Stack**: the commands run on a thread with a 512 MiB stack. When that does not map (`ulimit
+  -v` or similar), the first size that does (128, 32, 8, 2 MiB) is only a probe and the run starts
+  from the next smaller one, so the heap keeps some address space; the main thread is the last
+  resort.
 - Config values of the wrong type fail with exit 1 where upstream misuses them; the shapes that
   traitlets accepts (`""`, a list of pairs, a wrong-length `dict(...)` element) are reproduced.
   Exotic mistyped values beyond those listed in F-031 may differ in the error message.
-- `GIT_WORK_TREE`, `GIT_COMMON_DIR` and `core.worktree` are not honoured by repository discovery
-  (linked worktrees through `commondir`, submodule `.git` files, bare repositories and a working
-  directory inside `.git` are).
+- Repository discovery honours `GIT_WORK_TREE` and `GIT_COMMON_DIR` and handles linked worktrees
+  (`commondir`), submodule `.git` files, bare repositories and a working directory inside `.git`.
+  It does not read `core.worktree`, and `GIT_DIR` does not select the repository (upstream passes
+  the path to `Repo(path)`, so the variable is not consulted); `GIT_DIR` is exported to the git
+  commands, see F-031.
 - `os.path.exists(<int>)` (a numeric `base` in a config file is a file descriptor to Python) is
   approximated by checking `/proc/self/fd/N`.
 - nbformat's schema validation messages that `nbformat.write` logs (F-013) are not reproduced.
@@ -449,7 +460,8 @@ doubled final newline, and a common last line that is repeated after the conflic
   Disk values are not validated upstream (the trait validation only runs for trait defaults).
   Config shapes follow `traitlets.Config`: a top-level `""` is an empty configuration, a list of
   pairs is a configuration, a pair list element of the wrong length is ignored (`ValueError`), and
-  `"version"`, `[1]`, `5`, `null` or a non-dict section are errors (exit 1). A value of the wrong
+  `"version"`, `[1]`, `5`, a top-level `null` or a section that is neither a dict nor `null` are
+  errors (exit 1); a section that is `null` (`{"Diff": null}`) is pruned. A value of the wrong
   type that upstream would misuse (`use_color`, `paths`, `base`) is an error here as well, except
   that `use_color` fails mid-print as upstream does (F-030).
 - **`nbdime diff` and `nbdime merge` read no config**: their parser's `prog` is `nbdime`, which
@@ -463,16 +475,35 @@ doubled final newline, and a common last line that is repeated after the conflic
 - **A `None` base revision means the working tree** (`nbdiff a b c` with `a` not a revision gives
   `base = remote = None`; `_get_diff_entry_stream` tests `ref_name is GitRefWorkingTree`, which
   `None` satisfies): both sides are read from disk. Reproduced.
-- **GitPython is replaced by `git` subprocesses**: revisions are classified by
-  `git rev-parse --verify --quiet <arg>` (no `^{commit}` suffix, results cached), so `:/text`
-  and `HEAD:path` work; a result that is not a commit, or a token GitPython's own `rev_parse`
-  rejects (ranges, `^!`, `..`), exits 1 with a one-line message; anything that does not resolve is
-  a path. Diffs use the same `diff`/`diff-tree --raw -z` commands GitPython runs, `cat-file blob`,
-  and for clean filters `check-attr -z filter` and `config --get -z`, with the filter command run
-  by `/bin/sh -c`. Repository discovery follows GitPython's `is_git_dir`: linked worktrees
+- **GitPython is replaced by `git` subprocesses**, and its revision parser is ported. `repo.commit(rev)`
+  is `revparse::rev_parse`, GitPython's own grammar (`git.repo.fun.rev_parse` of the oracle's
+  GitPython 3.2.1), with the object lookups done by `git rev-parse --verify --quiet` (cached),
+  `cat-file -t`, `symbolic-ref` and the reflog files. Outcomes follow GitPython's exceptions:
+  - `BadName`, so the argument is a path: an unknown name, a `~n`/`^n` beyond the history, a
+    `:path` not in the index (`:nope.ipynb`), `:/text` with no match, `@{upstream}` without one (and
+    on anything that is not a `refs/heads/` reference, `HEAD@{u}` included).
+  - Any other exception, exit 1 with a one-line message on stderr (upstream: a traceback):
+    `^{type}` with an unknown type or a type the object cannot be made into (`^{blob}` of a
+    commit, `^{tag}` of a lightweight tag, `^{tree}~1`), reflog `@{n}` out of range or without a
+    reflog, `@{-n}` (out of range, or with an explicit `ref@{-n}`), `@{<anything but an integer
+    or git-time date>}` (`HEAD@{yesterday}`), `:/` with an empty pattern or `:/!x`, `rev:path`
+    where the path is not in the tree, `ref@{n}` where `ref` is not a reference (`deadbee@{1}`),
+    ranges and `^!`, a missing closing brace, and every revision that is not a commit
+    (`HEAD^{tree}`, `HEAD:a.ipynb`, `:a.ipynb`, a tag of a tree). `HEAD:path` is recognised as a
+    revision form and then exits 1, as upstream does.
+  - Not reproduced: reflog dates other than git's `<timestamp> <offset>` form (RFC 2822 and ISO
+    8601 dates exit 1 here; upstream resolves them), and GitPython's own reference-file lookup
+    (a name is looked up by git's rules, which agree with GitPython's list of prefixes).
+  Diffs use the same `diff`/`diff-tree --raw -z` commands GitPython runs, `cat-file blob`, and for
+  clean filters `check-attr -z filter` and `config --get -z`, with the filter command run by
+  `/bin/sh -c`. Repository discovery follows GitPython's `is_git_dir`: linked worktrees
   (`commondir`), a working directory inside `.git`, `.git` files for submodules; bare
   repositories exit 1 with a message on stderr. An empty pathspec is passed to git. A repository
   without commits makes `is_gitref(None)` raise upstream; here too.
+- **`GIT_DIR` in the environment**: like GitPython, the git commands that read the repository
+  run with `GIT_DIR` set to the git directory that was found (absolute), `GIT_COMMON_DIR` too when
+  the environment sets it, and `GIT_OBJECT_DIRECTORY` made absolute. `GIT_DIR=.git` therefore keeps
+  meaning the repository that was found, whatever the working directory of the child.
 - **Log lines**: `[W module:line]` names the upstream module and call line for the merge
   diagnostics (`strategies:217/224/465/468/638/707`, `decisions:224`) and `nbmergeapp`.
   Not reproduced: the `DEBUG` records, the `generic:497/553/631` and `decisions:219` errors (each

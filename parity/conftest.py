@@ -9,6 +9,11 @@ pytest_plugins = []
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+# Upstream renders text diffs and merges with the installed git; isolate it from user and system
+# configuration so the oracle sees git's defaults (findings F-022).
+os.environ["GIT_CONFIG_NOSYSTEM"] = "1"
+os.environ["GIT_CONFIG_GLOBAL"] = os.devnull
+
 from harness import ROOT, Engine  # noqa: E402
 
 _skipped = []

@@ -28,7 +28,7 @@ brute-force LCS, multilevel snakes, `diff_lists`, `diff_dicts`, generic `diff(a,
 default config. Parity: `nbdime.diff` and the individual functions on ≥ 20,000 generated cases and
 all string fields of the upstream test notebooks, byte-identical JSON.
 
-## Phase 2: fan out the port ⏳
+## Phase 2: fan out the port 🔄
 | Unit | Depends on | Scope |
 |---|---|---|
 | U02 nbformat read/write | F3 | rejoin/split lines, strip transient, id policy (F-003), v3→v4 upconversion, `nbformat.write` formatting |
@@ -39,12 +39,11 @@ all string fields of the upstream test notebooks, byte-identical JSON.
 | U07 `nbdiff` CLI | U04, U06 | flags, `--out`, gitref mode, exit codes |
 | U08 `nbshow` | U02 | flags and output |
 | U09 `nbpatch` | U05 | |
-| U10 merge decisions/chunks/apply | U05 | `MergeDecision`, `_sort_key`, `apply_decisions`, `make_merge_chunks` |
-| U11 generic merge | U10 | `_merge_dicts`, `_merge_lists`, `_merge_strings`, concurrent inserts |
-| U12 strategies + autoresolve | U11 | all conflict strategies, inline cells/source/outputs, record-conflict |
-| U13 notebook merge + `nbmerge` | U12, U02 | strategies from args, merge pretty-print, exit codes |
+| U10 merge engine (was U10 to U12) | U04, U05, U16 | decisions, chunks, apply, generic merge, strategies, autoresolve, `decide_notebook_merge`/`merge_notebooks`; spec `docs/process/u10-merge.md` |
+| U13 `nbmerge` CLI | U10, U02 | strategies from args, merge pretty-print, exit codes |
 | U14 git integration | U07, U13 | diff driver, merge driver, `nbdime config-git`, filters |
 | U15 Python package `nbdime_rs` | U04, U13 | PyO3 API per `docs/design.md`, wheels via maturin |
+| U16 git-compatible text diff/merge | none | `git diff --no-index` (plain/color/color-words) and `git merge-file` output in-process, git 2.43 defaults (F-022, F-023); spec `docs/process/u16-xdiff.md` |
 
 ## Phase 3: integration and parity ⏳
 Full upstream-derived test set through the harness, large differential runs (≥ 100k notebook

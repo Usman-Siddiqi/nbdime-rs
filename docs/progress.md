@@ -96,3 +96,14 @@ context intact.
 - U16 implementer running. Start U10 once U04 is on `main` (it needs the notebook differ's
   configuration); U10 uses a temporary `git merge-file` subprocess until U16 lands.
 - Wave 3: U06 pretty-printer (needs U16), U07 to U09 CLIs. Wave 4: U13, U14, U15.
+
+### Performance notes for Phase 4 (from the U04 delta review, 2026-11-20)
+- End to end (parse + diff + dump) the engine beats upstream everywhere measured except diffs that
+  are trivial but carry large added values (new image-heavy notebook vs empty: engine library
+  1.45 s vs upstream 1.31 s). Causes: `json::dump::write_string` pushes one char at a time (~37
+  instructions/byte, ~1.5x slower than CPython's C encoder), added values are copied into the diff
+  and again by `diff_to_value`, and the dev tool deep-copies its `args`.
+- `is_base64` (predicates.rs) walks base64 strings char by char: 44% of instructions on identical
+  image notebooks.
+- Line alignment grows faster than quadratic: dedenting a 1,000-line cell takes 150 s (upstream
+  is ~75x slower still). Needs an algorithmic look that keeps parity.

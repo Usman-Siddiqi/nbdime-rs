@@ -222,3 +222,101 @@ fn handle_agreed_deletion(
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::testutil::{notebook, run_app, TempDir};
+
+    #[test]
+    fn clean_merge_goes_to_stdout() {
+        let dir = TempDir::new("nbmerge-clean");
+        let base = dir.write("b.ipynb", &notebook(&["a = 1", "b = 2"]));
+        let local = dir.write("l.ipynb", &notebook(&["a = 1", "b = 3"]));
+        let remote = dir.write("r.ipynb", &notebook(&["a = 0", "b = 2"]));
+        let (code, out) = run_app(main, "nbmerge", &[&base, &local, &remote]);
+        assert_eq!(code, 0);
+        assert!(out.contains("a = 0") && out.contains("b = 3"));
+        assert!(out.ends_with("}\n"));
+    }
+
+    #[test]
+    fn conflict_sets_the_exit_status_and_writes_the_file() {
+        let dir = TempDir::new("nbmerge-conflict");
+        let base = dir.write("b.ipynb", &notebook(&["a = 1"]));
+        let local = dir.write("l.ipynb", &notebook(&["a = 2"]));
+        let remote = dir.write("r.ipynb", &notebook(&["a = 3"]));
+        let target = dir.path("merged.ipynb");
+        let (code, out) = run_app(main, "nbmerge", &[&base, &local, &remote, "--out", &target]);
+        assert_eq!((code, out.as_str()), (1, ""));
+        let merged = fs::read_to_string(&target).unwrap();
+        assert!(merged.contains("<<<<<<< local") && merged.contains(">>>>>>> remote"));
+    }
+
+    #[test]
+    fn base_defaults_to_the_null_file() {
+        let dir = TempDir::new("nbmerge-nobase");
+        let local = dir.write("l.ipynb", &notebook(&["a = 2"]));
+        let remote = dir.write("r.ipynb", &notebook(&["a = 2"]));
+        let (code, out) = run_app(main, "nbmerge", &[&local, &remote]);
+        assert_eq!(code, 0);
+        assert!(out.contains("a = 2"));
+    }
+
+    #[test]
+    fn missing_file_exits_with_one() {
+        let dir = TempDir::new("nbmerge-missing");
+        let base = dir.write("b.ipynb", &notebook(&["a = 1"]));
+        let missing = dir.path("nope.ipynb");
+        let (code, out) = run_app(main, "nbmerge", &[&base, &missing, &base]);
+        assert_eq!((code, out.as_str()), (1, ""));
+    }
+
+    #[test]
+    fn decisions_are_written_as_json() {
+        let dir = TempDir::new("nbmerge-decisions");
+        let base = dir.write("b.ipynb", &notebook(&["a = 1"]));
+        let local = dir.write("l.ipynb", &notebook(&["a = 2"]));
+        let remote = dir.write("r.ipynb", &notebook(&["a = 1"]));
+        let target = dir.path("decisions.json");
+        let (code, _) = run_app(
+            main,
+            "nbmerge",
+            &[&base, &local, &remote, "--decisions", "--out", &target],
+        );
+        assert_eq!(code, 0);
+        let written = fs::read_to_string(&target).unwrap();
+        assert!(written.starts_with("[\n  {") && written.ends_with("]\n"));
+    }
+
+    #[test]
+    fn agreed_deletion_removes_the_output() {
+        let dir = TempDir::new("nbmerge-deleted");
+        let base = dir.write("b.ipynb", &notebook(&["a = 1"]));
+        let target = dir.write("out.ipynb", "old");
+        let (code, _) = run_app(
+            main,
+            "nbmerge",
+            &[&base, "/dev/null", "/dev/null", "--out", &target],
+        );
+        assert_eq!(code, 0);
+        assert!(!Path::new(&target).exists());
+        let args: Vec<String> = ["/dev/null", "/dev/null", "/dev/null"]
+            .iter()
+            .map(|s| (*s).to_owned())
+            .collect();
+        assert!(main("nbmerge", &args, &mut Vec::new()).is_err());
+    }
+
+    #[test]
+    fn invalid_strategy_is_a_usage_error() {
+        let dir = TempDir::new("nbmerge-strategy");
+        let base = dir.write("b.ipynb", &notebook(&["a = 1"]));
+        let (code, _) = run_app(
+            main,
+            "nbmerge",
+            &[&base, &base, &base, "--merge-strategy", "nonsense"],
+        );
+        assert_eq!(code, 2);
+    }
+}

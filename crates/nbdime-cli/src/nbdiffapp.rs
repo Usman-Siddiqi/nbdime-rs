@@ -144,3 +144,94 @@ fn handle_diff(
     }
     Ok(0)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::testutil::{notebook, run_app, TempDir};
+
+    #[test]
+    fn missing_file_is_reported() {
+        let dir = TempDir::new("nbdiff-missing");
+        let a = dir.write("a.ipynb", &notebook(&["x = 1"]));
+        let missing = dir.path("nope.ipynb");
+        let (code, out) = run_app(main, "nbdiff", &[&a, &missing]);
+        assert_eq!(code, 1);
+        assert_eq!(out, format!("Missing file {missing}\n"));
+    }
+
+    #[test]
+    fn identical_notebooks_print_nothing() {
+        let dir = TempDir::new("nbdiff-same");
+        let a = dir.write("a.ipynb", &notebook(&["x = 1"]));
+        let (code, out) = run_app(main, "nbdiff", &[&a, &a]);
+        assert_eq!((code, out.as_str()), (0, ""));
+    }
+
+    #[test]
+    fn json_output_has_no_trailing_newline() {
+        let dir = TempDir::new("nbdiff-json");
+        let a = dir.write("a.ipynb", &notebook(&["x = 1"]));
+        let b = dir.write("b.ipynb", &notebook(&["x = 2"]));
+        let target = dir.path("diff.json");
+        let (code, out) = run_app(main, "nbdiff", &[&a, &b, "--out", &target]);
+        assert_eq!((code, out.as_str()), (0, ""));
+        let written = fs::read_to_string(&target).unwrap();
+        assert!(written.starts_with("[\n  {\n    \"op\": \"patch\""));
+        assert!(!written.ends_with('\n'));
+    }
+
+    #[test]
+    fn text_output_names_both_files() {
+        let dir = TempDir::new("nbdiff-text");
+        let a = dir.write("a.ipynb", &notebook(&["x = 1"]));
+        let b = dir.write("b.ipynb", &notebook(&["x = 2"]));
+        let (code, out) = run_app(main, "nbdiff", &[&a, &b, "--no-color", "--no-git"]);
+        assert_eq!(code, 0);
+        assert!(out.starts_with(&format!("nbdiff {a} {b}\n--- {a}  ")));
+        assert!(out.contains("## modified /cells/0/source:\n-  x = 1\n+  x = 2\n"));
+    }
+
+    #[test]
+    fn null_file_against_a_notebook() {
+        let dir = TempDir::new("nbdiff-null");
+        let a = dir.write("a.ipynb", &notebook(&["x = 1"]));
+        let (code, out) = run_app(main, "nbdiff", &["/dev/null", &a, "--no-color"]);
+        assert_eq!(code, 0);
+        assert!(out.starts_with(&format!("nbdiff /dev/null {a}\n")));
+        assert!(run_app_err(&["/dev/null", "/dev/null"]));
+    }
+
+    fn run_app_err(args: &[&str]) -> bool {
+        let args: Vec<String> = args.iter().map(|s| (*s).to_owned()).collect();
+        main("nbdiff", &args, &mut Vec::new()).is_err()
+    }
+
+    #[test]
+    fn broken_input_is_an_error() {
+        let dir = TempDir::new("nbdiff-broken");
+        let a = dir.write("a.ipynb", &notebook(&["x = 1"]));
+        let empty = dir.write("empty.ipynb", "");
+        assert!(run_app_err(&[&empty, &a]));
+        let garbage = dir.write("garbage.ipynb", "{not json");
+        assert!(run_app_err(&[&garbage, &a]));
+    }
+
+    #[test]
+    fn usage_errors_exit_with_two() {
+        let dir = TempDir::new("nbdiff-usage");
+        let a = dir.write("a.ipynb", &notebook(&["x = 1"]));
+        let (code, _) = run_app(main, "nbdiff", &["--bogus-flag", &a, &a]);
+        assert_eq!(code, 2);
+        let (code, out) = run_app(main, "nbdiff", &["--version"]);
+        assert_eq!(code, 0);
+        assert!(out.starts_with("nbdiff "));
+    }
+
+    #[test]
+    fn mixed_ignorables_fail_after_parsing() {
+        let dir = TempDir::new("nbdiff-mixed");
+        let a = dir.write("a.ipynb", &notebook(&["x = 1"]));
+        assert!(run_app_err(&["-s", "-O", &a, &a]));
+    }
+}

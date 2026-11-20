@@ -9,6 +9,8 @@ pub mod gitfiles;
 pub mod logging;
 pub mod nbdiffapp;
 pub mod nbmergeapp;
+#[cfg(test)]
+mod testutil;
 pub mod utils;
 
 use std::io::{self, Write};

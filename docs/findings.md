@@ -392,6 +392,45 @@ doubled final newline, and a common last line that is repeated after the conflic
   differently from Python; real notebooks never have them.
 - Recursion depth is bounded: nesting beyond `MAX_DEPTH` (500) is a `TooDeep` error (see F-009, F-018).
 
+### F-031: command line behaviour reproduced or decided (U07)
+- **Config lookup includes the current directory**: `build_config` inserts `os.getcwd()` at the
+  front of Jupyter's config path, so `./nbdime_config.json` wins over every other file. Sections
+  are the classes in the entry point's MRO (`NbdimeConfigurable`, `_Ignorables`, `_Diffing`,
+  `Diff`, `GitDiff`, `NbDiff` for `nbdiff`; `...Merge`, `NbMerge` for `nbmerge`), applied base
+  class first. `Global` is not in the MRO of any CLI entry point, so a `Global` section (and its
+  `log_level`) has no effect upstream; reproduced. Disk values are not validated upstream (the
+  trait validation only runs for trait defaults); a value of the wrong type that upstream would
+  misuse is an error here (exit 1).
+- **`nbdime diff` and `nbdime merge` read no config**: their parser's `prog` is `nbdime`, which
+  is not an entry point name, and `ConfigBackedParser` swallows the `ValueError`. Reproduced.
+- **`pushd` does not restore the directory** (`utils.pushd` saves `os.curdir`, i.e. `"."`): after
+  the first working-tree notebook of a revision diff the process stays in the repository root,
+  relative `--out` paths resolve there, and from a subdirectory the second working-tree notebook
+  is looked up in the parent of the root (and reads as a missing file). Reproduced exactly,
+  including the `git check-attr` runs and their stderr. Candidate for an upstream report (ask the
+  owner first).
+- **A `None` base revision means the working tree** (`nbdiff a b c` with `a` not a revision gives
+  `base = remote = None`; `_get_diff_entry_stream` tests `ref_name is GitRefWorkingTree`, which
+  `None` satisfies): both sides are read from disk. Reproduced.
+- **GitPython is replaced by `git` subprocesses**: `rev-parse --verify <rev>^{commit|tree}` for
+  revisions, and the same `diff`/`diff-tree --raw -z` commands GitPython runs (it passes tree
+  ids), `cat-file blob`, and for clean filters `check-attr -z filter` and `config --get -z`.
+  Revision syntax is git's, not GitPython's re-implementation of `rev_parse`; they agree on
+  branches, tags, `HEAD~n`, `^`, ids and abbreviations. A repository without commits makes
+  `is_gitref(None)` raise upstream; here too.
+- **Log lines**: `[W module:line]` names the upstream module and call line for the merge
+  diagnostics (`strategies:217/224/465/468/638/707`, `decisions:224`) and `nbmergeapp`.
+  Not reproduced: the `DEBUG` records, the `generic:497/553/631` and `decisions:219` errors (each
+  is followed by an exception upstream), the quadratic "Found duplicated decisions" check
+  (`generic:702`), and Python `warnings` routed through logging.
+- **Config path** (F-029): `JUPYTER_PLATFORM_DIRS` is ignored, and Python's user-site directory
+  `~/.local/etc/jupyter` is searched unless `VIRTUAL_ENV` is set (`ENABLE_USER_SITE` is false in
+  virtual environments).
+- **`argparse` edge**: `IgnorableAction` builds `ValueError(...)` without raising it for options
+  that are neither `-x` nor `--xyz`; unreachable here. The mixed positive/negative ignorables check
+  (`process_exclusive_ignorables`) raises `ArgumentError(None, ...)` *after* parsing, so it is a
+  traceback with exit status 1, not a usage error with status 2; reproduced (exit 1, message on stderr).
+
 ## Open questions
 
 - **Q-001** (decided): deterministic ids, see F-003.

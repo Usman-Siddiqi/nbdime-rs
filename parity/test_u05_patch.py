@@ -179,3 +179,35 @@ def test_u05_patch_upstream_notebooks_against_mutations(engine):
             other = mutate_notebook(rng, nb) if rng.random() < 0.8 else random_notebook(rng)
             cases.append({"obj": nb, "diff": plain(o_diff_notebooks(copy.deepcopy(nb), other))})
     check_parity(engine, "patch", cases, o_patch, min_cases=150)
+
+
+M = 9223372036854775807
+
+
+def _rr(k, n):
+    return {"op": "removerange", "key": k, "length": n}
+
+
+def _pt(k, d):
+    return {"op": "patch", "key": k, "diff": d}
+
+
+def test_u05_review_regressions(engine):
+    """Cases from the U05 hostile review (overflow in removerange merging, string valuelists)."""
+    patch_cases = [
+        {"obj": "abcdefgh\n", "diff": [_pt(0, [_rr(5, M), _rr(5, M), _rr(6, 1)])]},
+        {"obj": "abcdefgh\n", "diff": [_pt(0, [_rr(2, 3), _rr(5, 2)])]},
+    ]
+    check_parity(engine, "patch", patch_cases, o_patch, min_cases=2, max_error_fraction=1.0)
+    flatten_cases_ = [
+        {"a": "a\n", "diff": [_pt(0, [_rr(0, M), _rr(0, M)])]},
+        {"a": "a\n", "diff": [{"op": "addrange", "key": 0, "valuelist": ["x"]}, {"op": "add", "key": 0, "value": "y"}]},
+        {"a": "a\n", "diff": [{"op": "add", "key": 0, "value": "x"}, {"op": "addrange", "key": 0, "valuelist": ["yz"]}]},
+        {"a": "a\n", "diff": [{"op": "addrange", "key": 0, "valuelist": ["x"]}, {"op": "add", "key": 0, "value": 1}]},
+    ]
+    check_parity(engine, "flatten_list_of_string_diff", flatten_cases_, o_flatten, min_cases=4,
+                 max_error_fraction=1.0)
+    # F-015: merged lengths beyond u64 are rejected instead of returned.
+    (ok, _), = engine.call_many("flatten_list_of_string_diff",
+                                [{"a": "a\n", "diff": [_pt(0, [_rr(0, M), _rr(0, M), _rr(0, M)])]}])
+    assert not ok

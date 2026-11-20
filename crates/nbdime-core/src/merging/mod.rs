@@ -11,11 +11,11 @@ pub mod decisions;
 mod generic;
 pub mod notebooks;
 pub mod strategies;
-pub mod text;
 
 use crate::diff_format::DiffFormatError;
 use crate::diffing::DiffError;
 use crate::patch::PatchError;
+use crate::prettyprint::RenderError;
 
 pub use decisions::{apply_decisions, Action, MergeDecision, MergeDecisionBuilder};
 pub use generic::{decide_merge, decide_merge_with_diff};
@@ -45,7 +45,7 @@ pub enum MergeError {
     NotImplemented(String),
     /// Rendering an inline source conflict with `git merge-file` failed.
     #[error("merge rendering failed: {0}")]
-    Render(String),
+    Render(#[from] RenderError),
     #[error(transparent)]
     Diff(#[from] DiffError),
     #[error(transparent)]

@@ -13,8 +13,9 @@ use super::chunks::chunk_typename;
 use super::decisions::{
     push_patch_decision, resolve_path_chars, Action, MergeDecision, MergeDecisionBuilder,
 };
-use super::text::merge_render;
 use super::{assertion, invalid, MergeError};
+use crate::prettyprint::render::merge_render;
+use crate::prettyprint::PrettyPrintConfig;
 
 /// Strategies by starred path, plus the paths whose changes never count as conflicts.
 ///
@@ -779,7 +780,8 @@ pub fn resolve_strategy_inline_source(
             let (Value::Str(local), Value::Str(remote)) = (&local, &remote) else {
                 return invalid("a string patch gives a string");
             };
-            let (merged, status) = merge_render(base, local, remote, None)?;
+            let (merged, status) =
+                merge_render(base, local, remote, None, &PrettyPrintConfig::default())?;
             if path.last() != Some(&Key::from("source")) {
                 return assertion("assert path[-1] == \"source\"");
             }
@@ -916,7 +918,7 @@ fn resolve_strategy_inline_recurse(
                     else {
                         return invalid("cell sources must be strings");
                     };
-                    Value::from(merge_render("", l, r, None)?.0)
+                    Value::from(merge_render("", l, r, None, &PrettyPrintConfig::default())?.0)
                 }
                 "metadata" | "id" => {
                     let (Some(l), Some(r)) = (lmap.get(name), rmap.get(name)) else {

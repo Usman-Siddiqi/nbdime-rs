@@ -361,6 +361,28 @@ doubled final newline, and a common last line that is repeated after the conflic
   only, so nothing in upstream reaches it. The engine returns an error for it too rather than
   inventing a meaning. Candidate for an upstream cleanup (ask the owner first).
 
+### F-029: pretty-printer scope and quirks (U06)
+- `prettyprint` ports `config`, `format_value`, `hash_string`, `file_timestamp`, `pretty_print_notebook_diff`,
+  `pretty_print_merge_decisions` and the text renderers (`diff_render`, `merge_render` with their git,
+  diff, diff3, difflib and built-in fallbacks). `pprint.pformat` (CPython 3.13) and `repr` are ported;
+  `str.isprintable` and the regex classes `\s`/`\w` use tables generated from the oracle Python
+  (Unicode 15.1) by `scripts/gen_prettyprint_tables.py`.
+- Upstream quirks reproduced on purpose: the `'attachment'` typo in the cell exclude list (so
+  `--ignore-attachments` does not hide attachments, which print twice), decisions at the root path
+  print `//cells` (`"/".join(("/", "cells"))`), `pretty_print_output` ignores `config.metadata`, and
+  an empty text prints a bare newline.
+- **Type-change messages name `NotebookNode`, not `dict`**: for a dict-valued new value, upstream
+  prints `type(value).__name__`. The harness hands the engine plain dicts that upstream sees as
+  `DiffEntry`/`NotebookNode`; the engine prints `NotebookNode` for notebook-derived values like real
+  nbdime. Not a deviation from upstream itself.
+- **Markdown highlighting** (used by `pretty_print_notebook`, U08) is a Pygments `MarkdownLexer` plus
+  `Terminal256Formatter` port under `prettyprint/highlight`. A fenced code block whose language
+  Pygments has a lexer for returns `Unsupported` (the engine has no other lexers); this is a known
+  gap, reached only through `pretty_print_notebook`.
+- Duck-typed non-notebook shapes (attachments or metadata given as lists of integers) can behave
+  differently from Python; real notebooks never have them.
+- Recursion depth is bounded: nesting beyond `MAX_DEPTH` (500) is a `TooDeep` error (see F-009, F-018).
+
 ## Open questions
 
 - **Q-001** (decided): deterministic ids, see F-003.

@@ -1,4 +1,9 @@
-//! Rendering a three-way text merge with conflict markers.
+//! Rendering text diffs and three-way merges, with `git` or `diff`/`diff3` where they exist and
+//! built-in renderers otherwise, in the order upstream's `prettyprint` tries them.
+//!
+//! The tools run in a private temporary directory (mode 0700, unpredictable name, files created
+//! exclusively with mode 0600; removed on every path) and inherit the caller's environment, so
+//! the user's git configuration applies, as it does upstream.
 
 use std::collections::hash_map::RandomState;
 use std::env;
@@ -8,45 +13,120 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+use crate::difflib::unified_diff;
 use crate::py;
 
-use super::MergeError;
+use super::PrettyPrintConfig;
+
+/// Why a diff or merge could not be rendered: the tool could not be run, its output is not
+/// text, or it is empty where upstream indexes into it (`IndexError`).
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("{0}")]
+pub struct RenderError(pub String);
+
+/// The text of `a` and `b` as the terminal shows a change from one to the other: the lines of a
+/// unified diff (git's `--color`/`--color-words` form, plain `diff`, or difflib's), without the
+/// header that names the compared files.
+///
+/// Uses `git diff --no-index` when `config.use_git` and `git` is on `PATH`, else `diff` when
+/// `config.use_diff` and `diff` is, else difflib.
+pub fn diff_render(a: &str, b: &str, config: &PrettyPrintConfig) -> Result<String, RenderError> {
+    if config.use_git && which("git") {
+        diff_render_with_git(a, b, config)
+    } else if config.use_diff && which("diff") {
+        diff_render_with_diff(a, b)
+    } else {
+        Ok(diff_render_with_difflib(a, b, config))
+    }
+}
+
+/// `git diff --no-index` of `a` against `b`, minus git's four header lines.
+pub fn diff_render_with_git(
+    a: &str,
+    b: &str,
+    config: &PrettyPrintConfig,
+) -> Result<String, RenderError> {
+    let mut args = vec!["diff", "--no-index"];
+    if config.use_color {
+        args.push(if config.color_words {
+            "--color-words"
+        } else {
+            "--color"
+        });
+    }
+    args.extend(["before", "after"]);
+    let diff = external_diff_render("git", &args, a, b)?;
+    Ok(py::splitlines_keepends(&diff).into_iter().skip(4).collect())
+}
+
+/// The output of `diff before after`.
+pub fn diff_render_with_diff(a: &str, b: &str) -> Result<String, RenderError> {
+    external_diff_render("diff", &["before", "after"], a, b)
+}
+
+/// difflib's unified diff, coloured like git's, minus its two header lines.
+pub fn diff_render_with_difflib(a: &str, b: &str, config: &PrettyPrintConfig) -> String {
+    py::splitlines_keepends(&builtin_diff_render(a, b, config))
+        .into_iter()
+        .skip(2)
+        .collect()
+}
+
+fn builtin_diff_render(a: &str, b: &str, config: &PrettyPrintConfig) -> String {
+    let (a_lines, b_lines) = (py::splitlines(a), py::splitlines(b));
+    let rendered: Vec<String> = unified_diff(&a_lines, &b_lines, 3, "")
+        .into_iter()
+        .map(|line| {
+            let mut chars = line.chars();
+            let first = chars.next();
+            let rest = chars.as_str();
+            match first {
+                Some('+') => format!("{}{rest}{}", config.add(), config.reset()),
+                Some('-') => format!("{}{rest}{}", config.remove(), config.reset()),
+                Some('@') => line,
+                // Cannot happen: every line of a unified diff starts with one of the above or a space.
+                _ => format!("{}{rest}{}", config.keep(), config.reset()),
+            }
+        })
+        .collect();
+    rendered.join("\n")
+}
 
 /// The merge of `local` and `remote` against `base` as text with `<<<<<<<`, `=======` and
 /// `>>>>>>>` markers around the conflicting parts, and the status that the renderer reports
 /// (`git merge-file`: the number of conflicts; zero when the merge is clean).
 ///
-/// Picks the renderer like upstream's `prettyprint.merge_render`: `git merge-file` when `git` is
-/// on `PATH`, else `diff3 -m`, else a built-in renderer that treats any difference between the
-/// two sides as one conflict. The external tools run in a private temporary directory and see
-/// the caller's environment, so the user's git configuration applies.
+/// Picks the renderer like upstream's `merge_render`: `git merge-file` when `config.use_git` and
+/// `git` is on `PATH`, else `diff3 -m` when `config.use_diff` and `diff3` is, else a built-in
+/// renderer that treats any difference between the two sides as one conflict.
 ///
 /// `strategy` is one of `use-base`, `use-local`, `use-remote` or `union` (the last only with
-/// git); anything else is ignored, as upstream does.
+/// git); anything else is ignored, as upstream does (minus its warning).
 pub fn merge_render(
     base: &str,
     local: &str,
     remote: &str,
     strategy: Option<&str>,
-) -> Result<(String, i32), MergeError> {
+    config: &PrettyPrintConfig,
+) -> Result<(String, i32), RenderError> {
     if strategy == Some("use-base") {
         return Ok((base.to_owned(), 0));
     }
-    if which("git") {
+    if config.use_git && which("git") {
         merge_render_with_git(base, local, remote, strategy)
-    } else if which("diff3") {
+    } else if config.use_diff && which("diff3") {
         merge_render_with_diff3(base, local, remote, strategy)
     } else {
         Ok(builtin_merge_render(local, remote, strategy))
     }
 }
 
-fn merge_render_with_git(
+pub fn merge_render_with_git(
     base: &str,
     local: &str,
     remote: &str,
     strategy: Option<&str>,
-) -> Result<(String, i32), MergeError> {
+) -> Result<(String, i32), RenderError> {
     let mut args = vec!["merge-file", "-p", "local", "base", "remote"];
     match strategy {
         Some("use-local") => args.push("--ours"),
@@ -58,7 +138,7 @@ fn merge_render_with_git(
     // Without a last line there is nothing to inspect (upstream raises `IndexError`).
     let Some(last) = py::splitlines_keepends(&merged).last().copied() else {
         let detail = stderr.trim();
-        return Err(MergeError::Render(if detail.is_empty() {
+        return Err(RenderError(if detail.is_empty() {
             "git produced no output".into()
         } else {
             format!("git produced no output: {detail}")
@@ -71,12 +151,12 @@ fn merge_render_with_git(
     Ok((merged, status))
 }
 
-fn merge_render_with_diff3(
+pub fn merge_render_with_diff3(
     base: &str,
     local: &str,
     remote: &str,
     strategy: Option<&str>,
-) -> Result<(String, i32), MergeError> {
+) -> Result<(String, i32), RenderError> {
     match strategy {
         Some("use-local") => Ok((local.to_owned(), 0)),
         Some("use-remote") => Ok((remote.to_owned(), 0)),
@@ -89,7 +169,7 @@ fn merge_render_with_diff3(
 }
 
 /// The renderer of last resort: any difference between the sides is one conflict.
-fn builtin_merge_render(local: &str, remote: &str, strategy: Option<&str>) -> (String, i32) {
+pub fn builtin_merge_render(local: &str, remote: &str, strategy: Option<&str>) -> (String, i32) {
     if local == remote {
         return (local.to_owned(), 0);
     }
@@ -167,6 +247,52 @@ fn format_merge_render_lines(
     lines
 }
 
+/// Runs `program` with `args` over the files `before` and `after` in a private temporary
+/// directory and returns its standard output, minus the `\ No newline at end of file` lines.
+fn external_diff_render(
+    program: &str,
+    args: &[&str],
+    a: &str,
+    b: &str,
+) -> Result<String, RenderError> {
+    let dir = TempDir::new().map_err(render_error)?;
+    for (name, text) in [("before", a), ("after", b)] {
+        write_private(&dir.path().join(name), text).map_err(render_error)?;
+    }
+    let output = Command::new(program)
+        .args(args)
+        .current_dir(dir.path())
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|e| RenderError(format!("cannot run {program}: {e}")))?;
+    let text = String::from_utf8(output.stdout)
+        .map_err(|_| RenderError(format!("{program} output is not UTF-8")))?;
+    remove_no_newline_markers(&text)
+}
+
+/// `re.subn(r"^\\ No newline at end of file\n?", "", text, flags=re.M)`, which upstream asserts
+/// to remove at most two lines.
+fn remove_no_newline_markers(text: &str) -> Result<String, RenderError> {
+    const MARKER: &str = "\\ No newline at end of file";
+    let mut out = String::with_capacity(text.len());
+    let mut removed = 0;
+    for line in text.split_inclusive('\n') {
+        match line.strip_prefix(MARKER) {
+            Some(rest) => {
+                removed += 1;
+                out.push_str(rest.strip_prefix('\n').unwrap_or(rest));
+            }
+            None => out.push_str(line),
+        }
+    }
+    if removed > 2 {
+        return Err(RenderError(
+            "unexpected output from external diff renderer".into(),
+        ));
+    }
+    Ok(out)
+}
+
 /// Runs `program` with `args` over the files `local`, `base` and `remote` in a private temporary
 /// directory and returns its standard output with `\r\n` turned into `\n`, its exit status and
 /// its standard error.
@@ -176,7 +302,7 @@ fn external_merge_render(
     base: &str,
     local: &str,
     remote: &str,
-) -> Result<(String, i32, String), MergeError> {
+) -> Result<(String, i32, String), RenderError> {
     let dir = TempDir::new().map_err(render_error)?;
     for (name, text) in [("local", local), ("base", base), ("remote", remote)] {
         write_private(&dir.path().join(name), text).map_err(render_error)?;
@@ -186,9 +312,9 @@ fn external_merge_render(
         .current_dir(dir.path())
         .stdin(Stdio::null())
         .output()
-        .map_err(|e| MergeError::Render(format!("cannot run {program}: {e}")))?;
+        .map_err(|e| RenderError(format!("cannot run {program}: {e}")))?;
     let Ok(text) = String::from_utf8(output.stdout) else {
-        return Err(MergeError::Render(format!("{program} output is not UTF-8")));
+        return Err(RenderError(format!("{program} output is not UTF-8")));
     };
     let status = exit_status(&output.status);
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
@@ -211,8 +337,8 @@ fn exit_status(status: &std::process::ExitStatus) -> i32 {
     }
 }
 
-fn render_error(e: io::Error) -> MergeError {
-    MergeError::Render(e.to_string())
+fn render_error(e: io::Error) -> RenderError {
+    RenderError(e.to_string())
 }
 
 /// `shutil.which(program)`: an executable regular file in a directory of `PATH`.
@@ -381,7 +507,14 @@ mod tests {
     #[test]
     fn use_base_needs_no_renderer() {
         assert_eq!(
-            merge_render("base", "l", "r", Some("use-base")).unwrap(),
+            merge_render(
+                "base",
+                "l",
+                "r",
+                Some("use-base"),
+                &PrettyPrintConfig::default()
+            )
+            .unwrap(),
             ("base".into(), 0)
         );
     }
@@ -475,7 +608,8 @@ mod tests {
 
     #[test]
     fn merge_render_uses_whatever_renderer_is_available() {
-        let (merged, status) = merge_render("a\n", "b\n", "c\n", None).unwrap();
+        let config = PrettyPrintConfig::default();
+        let (merged, status) = merge_render("a\n", "b\n", "c\n", None, &config).unwrap();
         assert_eq!(status, 1);
         assert!(merged.starts_with("<<<<<<< local\n"));
     }
@@ -509,5 +643,119 @@ mod tests {
         let dir = TempDir::new().unwrap();
         write_private(&dir.path().join("f"), "x").unwrap();
         assert!(write_private(&dir.path().join("f"), "y").is_err());
+    }
+
+    fn config(use_color: bool, color_words: bool) -> PrettyPrintConfig {
+        PrettyPrintConfig {
+            use_color,
+            color_words,
+            ..PrettyPrintConfig::default()
+        }
+    }
+
+    const BEFORE: &str = "a\nb\nc\n";
+    const AFTER: &str = "a\nB\nc\nd";
+
+    #[test]
+    fn difflib_renderer_drops_its_header_and_joins_without_a_final_newline() {
+        assert_eq!(
+            diff_render_with_difflib(BEFORE, AFTER, &config(false, false)),
+            "@@ -1,3 +1,4 @@\n   a\n-  b\n+  B\n   c\n+  d"
+        );
+        assert_eq!(
+            diff_render_with_difflib(BEFORE, AFTER, &config(true, false)),
+            "@@ -1,3 +1,4 @@\n   a\x1b[0m\n\x1b[31m-  b\x1b[0m\n\x1b[32m+  B\x1b[0m\n   c\x1b[0m\n\
+             \x1b[32m+  d\x1b[0m"
+        );
+        // Lines that differ only by their ending are equal to the renderer.
+        assert_eq!(
+            diff_render_with_difflib("a\n", "a", &config(true, false)),
+            ""
+        );
+    }
+
+    #[test]
+    fn git_diff_without_its_header() {
+        if !have("git") {
+            return;
+        }
+        assert_eq!(
+            diff_render_with_git(BEFORE, AFTER, &config(false, false)).unwrap(),
+            "@@ -1,3 +1,4 @@\n a\n-b\n+B\n c\n+d\n"
+        );
+        assert_eq!(
+            diff_render_with_git(BEFORE, AFTER, &config(true, false)).unwrap(),
+            "\x1b[36m@@ -1,3 +1,4 @@\x1b[m\n a\x1b[m\n\x1b[31m-b\x1b[m\n\x1b[32m+\x1b[m\x1b[32mB\x1b[m\n c\x1b[m\n\
+             \x1b[32m+\x1b[m\x1b[32md\x1b[m\n\x1b[m\n"
+        );
+        assert_eq!(
+            diff_render_with_git(BEFORE, AFTER, &config(true, true)).unwrap(),
+            "\x1b[36m@@ -1,3 +1,4 @@\x1b[m\na\x1b[m\n\x1b[31mb\x1b[m\x1b[32mB\x1b[m\nc\x1b[m\n\x1b[32md\x1b[m\n"
+        );
+    }
+
+    #[test]
+    fn plain_diff_output_is_returned_whole() {
+        if !have("diff") {
+            return;
+        }
+        assert_eq!(
+            diff_render_with_diff(BEFORE, AFTER).unwrap(),
+            "2c2\n< b\n---\n> B\n3a4\n> d\n"
+        );
+    }
+
+    #[test]
+    fn diff_render_falls_back_in_order() {
+        let none = PrettyPrintConfig {
+            use_git: false,
+            use_diff: false,
+            ..config(false, false)
+        };
+        assert_eq!(
+            diff_render(BEFORE, AFTER, &none).unwrap(),
+            diff_render_with_difflib(BEFORE, AFTER, &none)
+        );
+        if have("diff") {
+            let diff_only = PrettyPrintConfig {
+                use_diff: true,
+                ..none
+            };
+            assert_eq!(
+                diff_render(BEFORE, AFTER, &diff_only).unwrap(),
+                diff_render_with_diff(BEFORE, AFTER).unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn no_newline_markers_are_removed_but_at_most_two_are_allowed() {
+        assert_eq!(
+            remove_no_newline_markers("-x\n\\ No newline at end of file\n+y\n").unwrap(),
+            "-x\n+y\n"
+        );
+        // Only a marker that starts a line counts, and only a directly following newline goes.
+        assert_eq!(
+            remove_no_newline_markers(
+                "\\ No newline at end of file more\nx \\ No newline at end of file\n"
+            )
+            .unwrap(),
+            " more\nx \\ No newline at end of file\n"
+        );
+        let three = "\\ No newline at end of file\n".repeat(3);
+        assert!(remove_no_newline_markers(&three).is_err());
+    }
+
+    #[test]
+    fn merge_render_follows_the_configured_fallbacks() {
+        let none = PrettyPrintConfig {
+            use_git: false,
+            use_diff: false,
+            ..config(false, false)
+        };
+        assert_eq!(
+            merge_render("a\n", "b\n", "c\n", None, &none).unwrap(),
+            ("<<<<<<< local\nb\n\n=======\nc\n\n>>>>>>> remote".into(), 1)
+        );
     }
 }

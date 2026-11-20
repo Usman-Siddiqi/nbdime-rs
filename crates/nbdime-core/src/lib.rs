@@ -13,6 +13,7 @@ pub mod merging;
 pub mod nbformat;
 pub mod patch;
 pub mod path;
+pub mod prettyprint;
 pub mod py;
 pub mod value;
 

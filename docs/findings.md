@@ -148,6 +148,13 @@ anything requires explicit approval from the project owner (see CLAUDE.md).
 - `nbformat.read` validates against the JSON schema and logs "Notebook JSON is invalid" to
   stderr, then carries on. nbdime-rs does not validate against the schema (only the id repair
   part of validation has an effect on the data), so it prints nothing. stdout is unaffected.
+- One schema failure is not survivable upstream: when the first schema error is a `oneOf` failure
+  on a cell whose `cell_type` is not a string (nbformat minor <= 5), `better_validation_error`
+  computes `cell_type + "_cell"` and raises `TypeError` out of `nbformat.reads`/`writes`. Whether
+  it fires depends on which schema error comes first, so nbdime-rs does not try to reproduce it
+  and accepts such (garbage) notebooks, as it does for every other schema violation. In a fuzz
+  run over about 30,000 notebooks with random scalar values in every field this was the only
+  difference found besides the documented deviations (F-003, F-012, Q-002).
 
 ### F-015: diff keys in patch input
 - Upstream's `patch_list` accepts `true`/`false` as list keys (Python bools are ints) and

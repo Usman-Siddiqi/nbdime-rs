@@ -134,15 +134,10 @@ pub fn merge_render_with_git(
         Some("union") => args.push("--union"),
         _ => {}
     }
-    let (merged, status, stderr) = external_merge_render("git", &args, base, local, remote)?;
+    let (merged, status) = external_merge_render("git", &args, base, local, remote)?;
     // Without a last line there is nothing to inspect (upstream raises `IndexError`).
     let Some(last) = py::splitlines_keepends(&merged).last().copied() else {
-        let detail = stderr.trim();
-        return Err(RenderError(if detail.is_empty() {
-            "git produced no output".into()
-        } else {
-            format!("git produced no output: {detail}")
-        }));
+        return Err(RenderError("git produced no output".into()));
     };
     // Drop the trailing newline if ">>>>>>> remote" is the last line.
     if last.contains('\n') && last.contains(">>>>>>>") {
@@ -162,7 +157,7 @@ pub fn merge_render_with_diff3(
         Some("use-remote") => Ok((remote.to_owned(), 0)),
         _ => {
             let args = ["-m", "local", "base", "remote"];
-            let (merged, status, _) = external_merge_render("diff3", &args, base, local, remote)?;
+            let (merged, status) = external_merge_render("diff3", &args, base, local, remote)?;
             Ok((merged, status))
         }
     }
@@ -255,14 +250,15 @@ fn external_diff_render(
     a: &str,
     b: &str,
 ) -> Result<String, RenderError> {
-    let dir = TempDir::new().map_err(render_error)?;
+    let dir = TempDir::new("nbdime-diff-")?;
     for (name, text) in [("before", a), ("after", b)] {
-        write_private(&dir.path().join(name), text).map_err(render_error)?;
+        write_named(&dir.path().join(name), text)?;
     }
     let output = Command::new(program)
         .args(args)
         .current_dir(dir.path())
         .stdin(Stdio::null())
+        .stderr(Stdio::inherit())
         .output()
         .map_err(|e| RenderError(format!("cannot run {program}: {e}")))?;
     let text = String::from_utf8(output.stdout)
@@ -294,31 +290,31 @@ fn remove_no_newline_markers(text: &str) -> Result<String, RenderError> {
 }
 
 /// Runs `program` with `args` over the files `local`, `base` and `remote` in a private temporary
-/// directory and returns its standard output with `\r\n` turned into `\n`, its exit status and
-/// its standard error.
+/// directory and returns its standard output with `\r\n` turned into `\n` and its exit status.
+/// Its standard error is the caller's, as upstream's `Popen` leaves it.
 fn external_merge_render(
     program: &str,
     args: &[&str],
     base: &str,
     local: &str,
     remote: &str,
-) -> Result<(String, i32, String), RenderError> {
-    let dir = TempDir::new().map_err(render_error)?;
+) -> Result<(String, i32), RenderError> {
+    let dir = TempDir::new("nbdime-merge-")?;
     for (name, text) in [("local", local), ("base", base), ("remote", remote)] {
-        write_private(&dir.path().join(name), text).map_err(render_error)?;
+        write_named(&dir.path().join(name), text)?;
     }
     let output = Command::new(program)
         .args(args)
         .current_dir(dir.path())
         .stdin(Stdio::null())
+        .stderr(Stdio::inherit())
         .output()
         .map_err(|e| RenderError(format!("cannot run {program}: {e}")))?;
     let Ok(text) = String::from_utf8(output.stdout) else {
         return Err(RenderError(format!("{program} output is not UTF-8")));
     };
     let status = exit_status(&output.status);
-    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-    Ok((text.replace("\r\n", "\n"), status, stderr))
+    Ok((text.replace("\r\n", "\n"), status))
 }
 
 /// The exit code, or the negated signal number for a killed process, as Python reports it.
@@ -337,53 +333,68 @@ fn exit_status(status: &std::process::ExitStatus) -> i32 {
     }
 }
 
-fn render_error(e: io::Error) -> RenderError {
-    RenderError(e.to_string())
+/// `shutil.which(program)`: a file that is not a directory and that the current user may
+/// execute, in a directory of `PATH` (an empty `PATH` finds nothing, an empty entry is the
+/// current directory).
+fn which(program: &str) -> bool {
+    which_in(program, env::var_os("PATH"))
 }
 
-/// `shutil.which(program)`: an executable regular file in a directory of `PATH`.
-fn which(program: &str) -> bool {
-    let path = env::var_os("PATH").unwrap_or_else(|| "/bin:/usr/bin".into());
-    env::split_paths(&path).any(|dir| is_executable(&dir.join(program)))
+/// [`which`] with the value of `PATH` given (`None` when it is not set, which leaves the
+/// platform's default).
+fn which_in(program: &str, path: Option<std::ffi::OsString>) -> bool {
+    let path = path.unwrap_or_else(|| "/bin:/usr/bin".into());
+    !path.is_empty() && env::split_paths(&path).any(|dir| is_executable(&dir.join(program)))
 }
 
 fn is_executable(path: &Path) -> bool {
-    let Ok(meta) = fs::metadata(path) else {
+    fs::metadata(path).is_ok_and(|meta| !meta.is_dir()) && may_execute(path)
+}
+
+/// `os.access(path, os.X_OK)`, which asks the kernel about the current user's rights (the mode
+/// bits alone say nothing about root, ACLs or read-only mounts).
+#[cfg(unix)]
+#[allow(unsafe_code)]
+fn may_execute(path: &Path) -> bool {
+    use std::os::unix::ffi::OsStrExt;
+    let Ok(path) = std::ffi::CString::new(path.as_os_str().as_bytes()) else {
         return false;
     };
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        meta.is_file() && meta.permissions().mode() & 0o111 != 0
-    }
-    #[cfg(not(unix))]
-    {
-        meta.is_file()
-    }
+    // SAFETY: `path` is a NUL-terminated string that outlives the call, and `access` only reads it.
+    unsafe { libc::access(path.as_ptr(), libc::X_OK) == 0 }
+}
+
+#[cfg(not(unix))]
+fn may_execute(_path: &Path) -> bool {
+    true
 }
 
 /// A scratch directory, readable by its owner only, that is removed when dropped.
 struct TempDir(PathBuf);
 
 impl TempDir {
-    /// Creates a directory with an unpredictable name (`mkdtemp`): `create_dir` fails on any
-    /// existing path, so a name that someone else has already taken is retried, never reused.
-    fn new() -> io::Result<TempDir> {
-        let parent = env::temp_dir();
+    /// Creates a directory with an unpredictable name (`mkdtemp`) in the directory that
+    /// [`temp_dir`] picks: `create_dir` fails on any existing path, so a name that someone else
+    /// has already taken is retried, never reused.
+    fn new(prefix: &str) -> Result<TempDir, RenderError> {
+        let parent = temp_dir(&tempdir_candidates(|name| env::var_os(name)))?;
         for _ in 0..100 {
-            let mut hasher = RandomState::new().build_hasher();
-            hasher.write_u32(std::process::id());
-            let path = parent.join(format!("nbdime-merge-{:016x}", hasher.finish()));
+            let path = parent.join(random_name(prefix));
             match create_private_dir(&path) {
                 Ok(()) => return Ok(TempDir(path)),
                 Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
-                Err(e) => return Err(e),
+                Err(e) => {
+                    return Err(RenderError(format!(
+                        "cannot create {}: {e}",
+                        path.display()
+                    )))
+                }
             }
         }
-        Err(io::Error::new(
-            io::ErrorKind::AlreadyExists,
-            "cannot find an unused temporary directory name",
-        ))
+        Err(RenderError(format!(
+            "cannot find an unused temporary directory name in {}",
+            parent.display()
+        )))
     }
 
     fn path(&self) -> &Path {
@@ -397,6 +408,57 @@ impl Drop for TempDir {
     }
 }
 
+fn random_name(prefix: &str) -> String {
+    let mut hasher = RandomState::new().build_hasher();
+    hasher.write_u32(std::process::id());
+    format!("{prefix}{:016x}", hasher.finish())
+}
+
+/// The directories `tempfile.gettempdir()` considers, best first: those named by `TMPDIR`,
+/// `TEMP` and `TMP`, the platform's, and the working directory.
+fn tempdir_candidates(var: impl Fn(&str) -> Option<std::ffi::OsString>) -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = ["TMPDIR", "TEMP", "TMP"]
+        .into_iter()
+        .filter_map(var)
+        .filter(|dir| !dir.is_empty())
+        .map(PathBuf::from)
+        .collect();
+    #[cfg(unix)]
+    dirs.extend(["/tmp", "/var/tmp", "/usr/tmp"].map(PathBuf::from));
+    #[cfg(not(unix))]
+    dirs.push(env::temp_dir());
+    dirs.extend(env::current_dir());
+    dirs
+}
+
+/// The first of `candidates` (made absolute) in which a file can be created, which is how
+/// `tempfile` picks its directory.
+fn temp_dir(candidates: &[PathBuf]) -> Result<PathBuf, RenderError> {
+    let cwd = env::current_dir().unwrap_or_default();
+    for dir in candidates {
+        let dir = cwd.join(dir);
+        for _ in 0..100 {
+            let probe = dir.join(random_name("nbdime-probe-"));
+            match write_private(&probe, "blat") {
+                Ok(()) => {
+                    let _ = fs::remove_file(&probe);
+                    return Ok(dir);
+                }
+                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
+                Err(_) => break,
+            }
+        }
+    }
+    let tried: Vec<_> = candidates
+        .iter()
+        .map(|dir| dir.display().to_string())
+        .collect();
+    Err(RenderError(format!(
+        "no usable temporary directory found in [{}]",
+        tried.join(", ")
+    )))
+}
+
 fn create_private_dir(path: &Path) -> io::Result<()> {
     let mut builder = fs::DirBuilder::new();
     #[cfg(unix)]
@@ -407,6 +469,13 @@ fn create_private_dir(path: &Path) -> io::Result<()> {
     builder.create(path)
 }
 
+/// [`write_private`], with an error that names the file.
+fn write_named(path: &Path, text: &str) -> Result<(), RenderError> {
+    write_private(path, text)
+        .map_err(|e| RenderError(format!("cannot write {}: {e}", path.display())))
+}
+
+/// Writes `text` to a new file that only its owner can read.
 fn write_private(path: &Path, text: &str) -> io::Result<()> {
     use std::io::Write;
     let mut options = fs::OpenOptions::new();
@@ -423,13 +492,10 @@ fn write_private(path: &Path, text: &str) -> io::Result<()> {
 mod tests {
     use super::*;
 
-    /// The tests of an external renderer only mean something where the tool exists.
-    fn have(tool: &str) -> bool {
-        let found = which(tool);
-        if !found {
-            eprintln!("{tool} is not on PATH: test not run");
-        }
-        found
+    /// The tests of an external renderer need the tool: a machine without it fails them instead
+    /// of skipping them.
+    fn require(tool: &str) {
+        assert!(which(tool), "{tool} must be on PATH to run these tests");
     }
 
     fn builtin(local: &str, remote: &str) -> (String, i32) {
@@ -521,18 +587,14 @@ mod tests {
 
     #[test]
     fn git_clean_merge_has_status_zero() {
-        if !have("git") {
-            return;
-        }
+        require("git");
         let r = merge_render_with_git("a\nb\nc\n", "A\nb\nc\n", "a\nb\nC\n", None).unwrap();
         assert_eq!(r, ("A\nb\nC\n".into(), 0));
     }
 
     #[test]
     fn git_conflict_is_marked_and_loses_its_final_newline() {
-        if !have("git") {
-            return;
-        }
+        require("git");
         let r = merge_render_with_git("a\n", "b\n", "c\n", None).unwrap();
         assert_eq!(
             r,
@@ -542,9 +604,7 @@ mod tests {
 
     #[test]
     fn git_strategies() {
-        if !have("git") {
-            return;
-        }
+        require("git");
         let ours = merge_render_with_git("a\n", "b\n", "c\n", Some("use-local")).unwrap();
         assert_eq!(ours.0, "b\n");
         let theirs = merge_render_with_git("a\n", "b\n", "c\n", Some("use-remote")).unwrap();
@@ -555,26 +615,20 @@ mod tests {
 
     #[test]
     fn git_empty_result_is_an_error() {
-        if !have("git") {
-            return;
-        }
+        require("git");
         assert!(merge_render_with_git("", "", "", None).is_err());
     }
 
     #[test]
     fn git_carriage_returns_are_normalized() {
-        if !have("git") {
-            return;
-        }
+        require("git");
         let (merged, _) = merge_render_with_git("a\r\n", "a\r\nb\r\n", "a\r\n", None).unwrap();
         assert_eq!(merged, "a\nb\n");
     }
 
     #[test]
     fn diff3_clean_and_conflicting_merges() {
-        if !have("diff3") {
-            return;
-        }
+        require("diff3");
         let clean = merge_render_with_diff3("a\nb\nc\n", "A\nb\nc\n", "a\nb\nC\n", None).unwrap();
         assert_eq!(clean, ("A\nb\nC\n".into(), 0));
         let conflict = merge_render_with_diff3("a\n", "b\n", "c\n", None).unwrap();
@@ -620,9 +674,84 @@ mod tests {
         assert!(!which("/"));
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn which_asks_for_execute_rights_and_skips_directories_like_shutil() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = TempDir::new("nbdime-test-").unwrap();
+        for (name, mode) in [("runnable", 0o755), ("plain", 0o644)] {
+            let file = dir.path().join(name);
+            fs::write(&file, "").unwrap();
+            fs::set_permissions(&file, fs::Permissions::from_mode(mode)).unwrap();
+        }
+        fs::create_dir(dir.path().join("folder")).unwrap();
+        let path = Some(dir.path().as_os_str().to_owned());
+        assert!(which_in("runnable", path.clone()));
+        assert!(!which_in("plain", path.clone()));
+        assert!(!which_in("folder", path.clone()));
+        assert!(!which_in("missing", path));
+
+        // `PATH=""` finds nothing; `PATH=":"` has two empty entries, which are the current
+        // directory (the absolute name below shows that an entry was tried).
+        let absolute = dir.path().join("runnable");
+        let absolute = absolute.to_str().unwrap();
+        assert!(!which_in(absolute, Some("".into())));
+        assert!(which_in(absolute, Some(":".into())));
+    }
+
+    #[test]
+    fn temp_dir_candidates_follow_tempfile_order() {
+        let var = |name: &str| match name {
+            "TMPDIR" => Some("/first".into()),
+            "TEMP" => Some("".into()),
+            "TMP" => Some("/third".into()),
+            _ => None,
+        };
+        let candidates = tempdir_candidates(var);
+        assert_eq!(
+            candidates[..2],
+            [PathBuf::from("/first"), PathBuf::from("/third")]
+        );
+        #[cfg(unix)]
+        assert_eq!(
+            candidates[2..5],
+            ["/tmp", "/var/tmp", "/usr/tmp"].map(PathBuf::from)
+        );
+        assert_eq!(candidates.last(), env::current_dir().ok().as_ref());
+    }
+
+    #[test]
+    fn an_unusable_temp_dir_falls_through_to_the_next_candidate() {
+        let good = TempDir::new("nbdime-test-").unwrap();
+        let missing = good.path().join("missing");
+        let picked = temp_dir(&[missing.clone(), good.path().to_owned()]).unwrap();
+        assert_eq!(picked, good.path());
+        // The probe leaves nothing behind.
+        assert_eq!(fs::read_dir(good.path()).unwrap().count(), 0);
+
+        let err = temp_dir(std::slice::from_ref(&missing)).unwrap_err();
+        assert!(err.0.contains(missing.to_str().unwrap()), "{err}");
+
+        // `TMPDIR` pointing nowhere does not stop a diff from being rendered.
+        let var = |name: &str| (name == "TMPDIR").then(|| "/nonexistent-dir-xyz".into());
+        let picked = temp_dir(&tempdir_candidates(var)).unwrap();
+        assert_ne!(picked, PathBuf::from("/nonexistent-dir-xyz"));
+    }
+
+    #[test]
+    fn write_errors_name_the_file() {
+        let dir = TempDir::new("nbdime-test-").unwrap();
+        let path = dir.path().join("missing").join("file");
+        let err = write_named(&path, "x").unwrap_err();
+        assert!(err.0.contains(path.to_str().unwrap()), "{err}");
+    }
+
     #[test]
     fn temp_dirs_are_private_unique_and_removed() {
-        let (a, b) = (TempDir::new().unwrap(), TempDir::new().unwrap());
+        let (a, b) = (
+            TempDir::new("nbdime-test-").unwrap(),
+            TempDir::new("nbdime-test-").unwrap(),
+        );
         assert_ne!(a.path(), b.path());
         #[cfg(unix)]
         {
@@ -640,7 +769,7 @@ mod tests {
 
     #[test]
     fn existing_files_are_never_overwritten() {
-        let dir = TempDir::new().unwrap();
+        let dir = TempDir::new("nbdime-test-").unwrap();
         write_private(&dir.path().join("f"), "x").unwrap();
         assert!(write_private(&dir.path().join("f"), "y").is_err());
     }
@@ -676,9 +805,7 @@ mod tests {
 
     #[test]
     fn git_diff_without_its_header() {
-        if !have("git") {
-            return;
-        }
+        require("git");
         assert_eq!(
             diff_render_with_git(BEFORE, AFTER, &config(false, false)).unwrap(),
             "@@ -1,3 +1,4 @@\n a\n-b\n+B\n c\n+d\n"
@@ -696,9 +823,7 @@ mod tests {
 
     #[test]
     fn plain_diff_output_is_returned_whole() {
-        if !have("diff") {
-            return;
-        }
+        require("diff");
         assert_eq!(
             diff_render_with_diff(BEFORE, AFTER).unwrap(),
             "2c2\n< b\n---\n> B\n3a4\n> d\n"
@@ -716,16 +841,15 @@ mod tests {
             diff_render(BEFORE, AFTER, &none).unwrap(),
             diff_render_with_difflib(BEFORE, AFTER, &none)
         );
-        if have("diff") {
-            let diff_only = PrettyPrintConfig {
-                use_diff: true,
-                ..none
-            };
-            assert_eq!(
-                diff_render(BEFORE, AFTER, &diff_only).unwrap(),
-                diff_render_with_diff(BEFORE, AFTER).unwrap()
-            );
-        }
+        require("diff");
+        let diff_only = PrettyPrintConfig {
+            use_diff: true,
+            ..none
+        };
+        assert_eq!(
+            diff_render(BEFORE, AFTER, &diff_only).unwrap(),
+            diff_render_with_diff(BEFORE, AFTER).unwrap()
+        );
     }
 
     #[test]

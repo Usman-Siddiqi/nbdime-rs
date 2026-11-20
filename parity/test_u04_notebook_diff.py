@@ -7,11 +7,13 @@ and command-line flags in. Both start from `reset_notebook_differ()`.
 
 `notebook.compare {pred, x, y}` evaluates one predicate with the default configuration.
 
-The oracle is upstream with two fixes, each shown to be neutral where upstream does not
+The oracle is upstream with three fixes, each shown to be neutral where upstream does not
 misbehave:
 - F-001: predicate lookups do not register paths (no spurious RuntimeError).
 - F-014: `diff_single_outputs` does not reorder the caller's output dicts (upstream pops and
   re-adds `data`, which moves it to the end of outputs that later appear as values in the diff).
+- F-019: `add_mime_diff` does not crash on mime values the generic diff cannot recurse into
+  (an `application/json` number, bool or null, or values of different kinds); they are replaced.
 """
 
 import contextlib
@@ -56,10 +58,22 @@ def _non_mutating(differ):
 
 
 _DSO = nbm.notebook_differs.default_values["/cells/*/outputs/*"]
+_ADD_MIME_DIFF = nbm.add_mime_diff
+
+
+def _add_mime_diff_fixed(key, avalue, bvalue, diffbuilder):
+    """add_mime_diff without the F-019 crash: values the generic diff cannot recurse into
+    (a JSON scalar, or two values of different kinds) are replaced when they differ."""
+    kinds = (list, dict, str)
+    if not any(isinstance(avalue, k) and isinstance(bvalue, k) for k in kinds):
+        if avalue != bvalue:
+            diffbuilder.replace(key, bvalue)
+        return
+    _ADD_MIME_DIFF(key, avalue, bvalue, diffbuilder)
 
 
 @contextlib.contextmanager
-def upstream(fix_f014=True):
+def upstream(fix_f014=True, fix_f019=True):
     saved_predicates = nbm.notebook_config.predicates
     saved_default_predicates = nb_generic.default_predicates
     nbm.notebook_config.predicates = _NonRecordingDefaultDict2(
@@ -67,6 +81,8 @@ def upstream(fix_f014=True):
     nb_generic.default_predicates = lambda: _NonRecordingDefaultDict(lambda: (operator.__eq__,))
     if fix_f014:
         nbm.notebook_differs.default_values["/cells/*/outputs/*"] = _non_mutating(_DSO)
+    if fix_f019:
+        nbm.add_mime_diff = _add_mime_diff_fixed
     nbm.reset_notebook_differ()
     try:
         yield
@@ -74,6 +90,7 @@ def upstream(fix_f014=True):
         nbm.notebook_config.predicates = saved_predicates
         nb_generic.default_predicates = saved_default_predicates
         nbm.notebook_differs.default_values["/cells/*/outputs/*"] = _DSO
+        nbm.add_mime_diff = _ADD_MIME_DIFF
         nbm.reset_notebook_differ()
 
 
@@ -81,8 +98,8 @@ def _as_node(v):
     return nbformat.from_dict(v) if isinstance(v, dict) else v
 
 
-def o_diff_notebooks(a, b, ignores=None, targets=None, fix_f014=True):
-    with upstream(fix_f014):
+def o_diff_notebooks(a, b, ignores=None, targets=None, fix_f014=True, fix_f019=True):
+    with upstream(fix_f014, fix_f019):
         if ignores is not None:
             nbm.set_notebook_diff_ignores(ignores)
         if targets is not None:
@@ -309,3 +326,46 @@ def test_u04_f014_fix_is_neutral():
         assert json.dumps(fixed, sort_keys=True) == json.dumps(raw, sort_keys=True), case
         reordered += canon(fixed) != canon(raw)
     assert reordered > 0, "no case exercises F-014"
+
+
+def _json_mime_cases():
+    nb = {"cells": [], "metadata": {}, "nbformat": 4, "nbformat_minor": 4}
+
+    def with_data(data, att=None):
+        cell = {"cell_type": "code", "execution_count": 1, "metadata": {}, "source": "x",
+                "outputs": [{"data": dict(data, **{"text/plain": "x"}), "metadata": {}, "output_type": "display_data"}]}
+        cells = [cell]
+        if att is not None:
+            cells.append({"cell_type": "markdown", "metadata": {}, "source": "![a](attachment:a.json)",
+                          "attachments": {"a.json": att}})
+        return dict(nb, cells=cells)
+
+    values = [1, 2, 2.5, True, False, None, "s", [1], {"a": 1}, "t\n"]
+    cases = []
+    for x in values:
+        for y in values:
+            cases.append({"a": with_data({"application/json": x}), "b": with_data({"application/json": y})})
+            cases.append({"a": with_data({"application/vnd.x+json": x}), "b": with_data({"application/vnd.x+json": y})})
+            cases.append({"a": with_data({}, att={"application/json": x}), "b": with_data({}, att={"application/json": y})})
+    cases.append({"a": with_data({"text/html": "a"}), "b": with_data({"text/html": ["a", 1]})})
+    return cases
+
+
+def test_u04_f019_json_mime_scalars(engine):
+    check_parity(engine, "diff_notebooks", _json_mime_cases(), o_diff_notebooks, min_cases=300)
+
+
+def test_u04_f019_fix_is_neutral():
+    """Where upstream does not raise, the F-019 fix changes nothing; on these cases it raises."""
+    raised = 0
+    cases = _json_mime_cases() + upstream_pairs() + random_pairs("u04-f019", scaled(300))
+    for case in cases:
+        try:
+            raw = o_diff_notebooks(**copy.deepcopy(case), fix_f019=False)
+        except RuntimeError as e:
+            raised += "Can currently only diff" in str(e)
+            continue
+        except Exception:
+            continue
+        assert canon(o_diff_notebooks(**copy.deepcopy(case))) == canon(raw), case
+    assert raised > 0

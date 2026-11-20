@@ -71,6 +71,18 @@ anything requires explicit approval from the project owner (see CLAUDE.md).
   `diff_single_outputs` with shallow copies; the neutrality test shows the results are equal
   with keys sorted. Candidate for an upstream report (ask the owner first).
 
+### F-019: `nbdiff a.ipynb a.ipynb` crashes on a JSON-scalar mime value
+- **What**: `add_mime_diff` sends every `application/json` (and `*+json`, `text/*`, ...) value to
+  the generic `diff`, which raises `RuntimeError: Can currently only diff list, dict, or str
+  objects.` for numbers, bools and null, even when the two values are equal. The notebook schema
+  allows any JSON value for JSON mime types, so a valid notebook (an output or attachment with
+  `"application/json": 1`) cannot be diffed, not even against itself. Values of different kinds
+  (`"a"` vs `["a"]`) raise the same way. Found by the U04 hostile review.
+- **Decision**: deviation. Values the generic diff cannot recurse into are replaced when they
+  differ (`!=`), which is what `add_mime_diff` does for non-split mime types. The parity oracle
+  applies the same fix; `test_u04_f019_fix_is_neutral` shows it changes nothing where upstream
+  does not raise. Candidate for an upstream report (ask the owner first).
+
 ## Nondeterminism in upstream
 
 ### F-003: random cell ids on read (nbformat >= 4.5)

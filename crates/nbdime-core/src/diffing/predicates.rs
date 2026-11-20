@@ -13,8 +13,10 @@ use crate::diff_format::Op;
 use crate::value::{Map, Value};
 
 use super::approximate::{compare_values_approximate, PreparedStr};
-use super::config::DiffConfig;
-use super::generic::diff_sequence_multilevel_items;
+use super::config::{index_listed, retain_unlisted_keys, DiffConfig, Differ};
+use super::generic::multilevel_snakes;
+use super::notebooks::OUTPUTS_PATH;
+use super::snakes::Snake;
 use super::DiffError;
 
 const TEXT_MIMEDATA_MAX_COMPARE_LENGTH: usize = 10_000;
@@ -573,51 +575,79 @@ pub(super) fn compare_cell_by_ids(x: &Item<'_>, y: &Item<'_>) -> Result<bool, Di
 
 /// Whether two output lists align without any output being added or removed, under the
 /// differ currently configured for `/cells/*/outputs` (so ignoring outputs makes them align).
+///
+/// With the default differ (possibly wrapped in key filters) the answer follows from the
+/// alignment alone: only additions and removals count, so the diffs of aligned pairs are not
+/// computed and added outputs are not copied.
 fn compare_outputs_approximate<'a>(
     x: &[Item<'a>],
     y: &[Item<'a>],
     config: &DiffConfig,
 ) -> Result<bool, DiffError> {
-    let diff = diff_outputs(config.differ(OUTPUTS), x, y, config)?;
-    Ok(diff.iter().all(|e| matches!(e.op, Op::Patch { .. })))
-}
-
-const OUTPUTS: &str = "/cells/*/outputs";
-
-fn diff_outputs<'a>(
-    differ: &super::config::Differ,
-    x: &[Item<'a>],
-    y: &[Item<'a>],
-    config: &DiffConfig,
-) -> Result<crate::diff_format::Diff, DiffError> {
-    use super::config::{retain_unlisted_keys, Differ};
+    let mut filters = Vec::new();
+    let mut differ = config.differ(OUTPUTS_PATH);
+    while let Differ::IgnoreKeys { inner, keys } = differ {
+        filters.push(keys.as_slice());
+        differ = inner;
+    }
+    let survives = |key: usize| !filters.iter().any(|keys| index_listed(key, keys));
     match differ {
-        Differ::SequenceMultilevel => diff_sequence_multilevel_items(x, y, OUTPUTS, config),
-        Differ::Ignore => Ok(Vec::new()),
-        Differ::IgnoreKeys { inner, keys } => {
-            let mut diff = diff_outputs(inner, x, y, config)?;
-            retain_unlisted_keys(&mut diff, keys);
-            Ok(diff)
+        Differ::Ignore => Ok(true),
+        Differ::SequenceMultilevel => {
+            let snakes = multilevel_snakes(x, y, OUTPUTS_PATH, config)?;
+            Ok(!unaligned_keys(&snakes, x.len(), y.len())
+                .into_iter()
+                .any(survives))
         }
         other => {
             let values =
                 |items: &[Item<'_>]| Value::List(items.iter().map(|i| i.value().clone()).collect());
-            other.apply(&values(x), &values(y), OUTPUTS, config)
+            let mut diff = other.apply(&values(x), &values(y), OUTPUTS_PATH, config)?;
+            for keys in filters {
+                retain_unlisted_keys(&mut diff, keys);
+            }
+            Ok(diff.iter().all(|e| matches!(e.op, Op::Patch { .. })))
         }
     }
 }
 
+/// The keys of the `removerange` and `addrange` entries that the snakes yield: the start of
+/// every run of items outside them, in either list.
+fn unaligned_keys(snakes: &[Snake], len_x: usize, len_y: usize) -> Vec<usize> {
+    let closing = Snake {
+        i: len_x,
+        j: len_y,
+        n: 0,
+    };
+    let (mut i0, mut j0) = (0, 0);
+    let mut keys = Vec::new();
+    for snake in snakes.iter().chain([&closing]) {
+        if snake.i > i0 || snake.j > j0 {
+            keys.push(i0);
+        }
+        i0 = snake.i + snake.n;
+        j0 = snake.j + snake.n;
+    }
+    keys
+}
+
 #[cfg(test)]
 mod tests {
+    use super::super::config::Predicate;
+    use super::super::generic::diff_sequence_multilevel_items;
+    use super::super::MAX_DIFF_DEPTH;
     use super::*;
     use crate::json::parse;
 
+    /// The default configuration with the notebook outputs predicates and differ.
     fn config() -> DiffConfig {
-        DiffConfig::default()
-    }
-
-    fn item(json: &str) -> (Value, ()) {
-        (parse(json).unwrap(), ())
+        let mut config = DiffConfig::default();
+        config.set_predicates(
+            OUTPUTS_PATH,
+            vec![Predicate::OutputApproximate, Predicate::OutputStrict],
+        );
+        config.set_differ(OUTPUTS_PATH, Differ::SequenceMultilevel);
+        config
     }
 
     fn check(
@@ -625,7 +655,7 @@ mod tests {
         x: &str,
         y: &str,
     ) -> Result<bool, DiffError> {
-        let (x, y) = (item(x).0, item(y).0);
+        let (x, y) = (parse(x).unwrap(), parse(y).unwrap());
         pred(&Item::new(&x), &Item::new(&y))
     }
 
@@ -859,18 +889,137 @@ mod tests {
         let b = parse(&stream("completely different text", "")).unwrap();
         let (xi, yi) = ([Item::new(&a)], [Item::new(&b)]);
         let mut config = config();
-        config.set_predicates(
-            OUTPUTS,
-            vec![
-                super::super::config::Predicate::OutputApproximate,
-                super::super::config::Predicate::OutputStrict,
-            ],
-        );
-        config.set_differ(OUTPUTS, super::super::config::Differ::SequenceMultilevel);
         assert_eq!(compare_outputs_approximate(&xi, &yi, &config), Ok(false));
         assert_eq!(compare_outputs_approximate(&xi, &[], &config), Ok(false));
         assert_eq!(compare_outputs_approximate(&[], &[], &config), Ok(true));
-        config.set_differ(OUTPUTS, super::super::config::Differ::Ignore);
+        config.set_differ(OUTPUTS_PATH, Differ::Ignore);
         assert_eq!(compare_outputs_approximate(&xi, &yi, &config), Ok(true));
+    }
+
+    fn ignoring(keys: &[i64], inner: Differ) -> Differ {
+        Differ::IgnoreKeys {
+            inner: Box::new(inner),
+            keys: keys.iter().map(|&k| Value::from(k)).collect(),
+        }
+    }
+
+    #[test]
+    fn ignored_keys_hide_unaligned_outputs_at_those_positions() {
+        let texts = ["alpha one", "beta two two", "gamma three three three"];
+        let values: Vec<Value> = texts
+            .iter()
+            .map(|t| parse(&stream(t, "")).unwrap())
+            .collect();
+        let items: Vec<_> = values.iter().map(Item::new).collect();
+        // The second output was removed: one `removerange` at key 1.
+        let (x, y) = (
+            &items[..],
+            &[items[0].value(), items[2].value()].map(Item::new),
+        );
+        let compare = |differ: Differ| {
+            let mut config = config();
+            config.set_differ(OUTPUTS_PATH, differ);
+            compare_outputs_approximate(x, y, &config)
+        };
+        assert_eq!(compare(Differ::SequenceMultilevel), Ok(false));
+        assert_eq!(
+            compare(ignoring(&[1], Differ::SequenceMultilevel)),
+            Ok(true)
+        );
+        assert_eq!(
+            compare(ignoring(&[0], Differ::SequenceMultilevel)),
+            Ok(false)
+        );
+        // `True == 1`, and every wrapper must list the key for the entry to disappear.
+        let by_bool = Differ::IgnoreKeys {
+            inner: Box::new(Differ::SequenceMultilevel),
+            keys: vec![Value::Bool(true)],
+        };
+        assert_eq!(compare(by_bool), Ok(true));
+        let nested = ignoring(&[0], ignoring(&[1], Differ::SequenceMultilevel));
+        assert_eq!(compare(nested), Ok(true));
+        assert_eq!(compare(ignoring(&[0], Differ::Ignore)), Ok(true));
+        assert_eq!(
+            compare(ignoring(&[], ignoring(&[], Differ::Ignore))),
+            Ok(true)
+        );
+    }
+
+    #[test]
+    fn alignment_alone_decides_like_the_full_output_diff() {
+        let outputs = [
+            stream("hello world", ""),
+            stream("hello there, world", ""),
+            stream("something else entirely", ""),
+            r#"{"output_type":"display_data","metadata":{},"data":{"text/plain":"<Figure size 640x480>"}}"#
+                .to_owned(),
+            r#"{"output_type":"error","ename":"E","evalue":"v","traceback":["tb line one"]}"#
+                .to_owned(),
+        ];
+        let values: Vec<Value> = outputs.iter().map(|o| parse(o).unwrap()).collect();
+        let config = config();
+        // Every pair of sublists of up to three outputs, including the empty one.
+        let lists: Vec<Vec<usize>> = (0..(1 << 7))
+            .map(|m: usize| (0..5).filter(|i| m & (1 << i) != 0).collect::<Vec<_>>())
+            .filter(|l| l.len() <= 3)
+            .collect();
+        for xs in &lists {
+            for ys in &lists {
+                let x: Vec<_> = xs.iter().map(|&i| Item::new(&values[i])).collect();
+                let y: Vec<_> = ys.iter().map(|&i| Item::new(&values[i])).collect();
+                let full = diff_sequence_multilevel_items(&x, &y, OUTPUTS_PATH, &config).unwrap();
+                let expected = full.iter().all(|e| matches!(e.op, Op::Patch { .. }));
+                assert_eq!(
+                    compare_outputs_approximate(&x, &y, &config),
+                    Ok(expected),
+                    "{xs:?} against {ys:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn predicates_refuse_inputs_nested_beyond_the_diff_limit_on_a_small_stack() {
+        // Stream outputs that carry cells make the predicates recurse through the value, so the
+        // public entry has to bound the nesting before it starts.
+        fn nested_cell(cycles: usize) -> Value {
+            let stream =
+                |extra: &str| format!(r#"{{"output_type":"stream","name":"o","text":"t"{extra}}}"#);
+            let mut output = parse(&stream("")).unwrap();
+            for _ in 0..cycles {
+                let cell = Value::Object(Map::from_iter([
+                    ("cell_type".to_owned(), Value::from("code")),
+                    ("source".to_owned(), Value::from("x")),
+                    ("outputs".to_owned(), Value::List(vec![output])),
+                ]));
+                let mut with_cells = parse(&stream("")).unwrap();
+                if let Value::Object(map) = &mut with_cells {
+                    map.insert("cells".to_owned(), Value::List(vec![cell]));
+                }
+                output = with_cells;
+            }
+            Value::Object(Map::from_iter([
+                ("cell_type".to_owned(), Value::from("code")),
+                ("source".to_owned(), Value::from("x")),
+                ("outputs".to_owned(), Value::List(vec![output])),
+            ]))
+        }
+        let handle = std::thread::Builder::new()
+            .stack_size(2 << 20)
+            .spawn(|| {
+                let config = DiffConfig::default();
+                let deep = nested_cell(1000);
+                let results = [
+                    Predicate::CellModerate.compare(&deep, &deep, &config),
+                    Predicate::CellStrict.compare(&deep, &deep, &config),
+                    Predicate::Eq.compare(&deep, &deep, &config),
+                ];
+                // Dropping runs on this thread too; the nesting is shallow enough for that.
+                results
+            })
+            .unwrap();
+        for result in handle.join().unwrap() {
+            assert_eq!(result, Err(DiffError::TooDeep(MAX_DIFF_DEPTH)));
+        }
     }
 }

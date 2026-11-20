@@ -80,27 +80,42 @@ anything requires explicit approval from the project owner (see CLAUDE.md).
   `set_notebook_diff_ignores({"/cells/*/id": True})`.
 - **Decision**: replicated (parity), since the flag is observable through `nbdiff`. Candidate for
   an upstream report (ask the owner first).
+- **Terminal output**: upstream's pretty-printer (`PrettyPrintConfig.should_ignore_path`) hides
+  `/cells/*/id` when `id=False`, so `nbdiff -I` looks right in the terminal while the id still
+  appears in the JSON (`--out`) and web output. The engine reproduces the diff; the U06
+  pretty-printer unit reproduces the hiding.
 
 ### F-017: shapes that are not nbformat-shaped
 - **What**: the notebook predicates are duck-typed upstream: a cell `source` that is a list or
   dict, a stream `text` that is a list in one output and a string in the other, a `traceback`
-  that is a string, or `outputs` that is a non-list truthy value sometimes yield results
-  (`compare_text_strict` joins lists; `compare_strings_approximate` iterates any sequence) and
-  sometimes raise (`compare_text_approximate` is `lru_cache`d, so list and dict arguments raise
-  `TypeError` before the body runs). nbformat's reader never produces such shapes.
+  that is a string, a list or dict `text/*` mime value, a falsy non-list `outputs` (`""`), or
+  `outputs` that is a non-list truthy value sometimes yield results (`compare_text_strict`
+  joins lists; `compare_strings_approximate` iterates any sequence) and sometimes raise
+  (`compare_text_approximate` is `lru_cache`d, so list and dict arguments raise `TypeError`
+  before the body runs). nbformat's reader never produces such shapes, but `json.load` does:
+  the on-disk form has list sources, and upstream diffs those pairs when they are identical
+  or when only one side is a list.
 - **Decision**: nbdime-rs supports the shapes nbformat produces (strings where nbformat joins
   lines, lists of strings for tracebacks) with upstream's results, and returns an error for the
   other shapes, including where upstream happens to return a value. Missing keys and the
-  predicates that raise upstream raise here too. One further difference: the brute-force LCS
-  strips a common suffix of aligned items before evaluating the predicate grid (see
-  `docs/upstream-performance.md`), so a malformed cell that only sits in the stripped part never
-  reaches a predicate and does not raise, where upstream evaluates every pair. Neither affects
-  valid notebooks. Found by a differential run of 7,500 predicate and 1,500 notebook cases built
-  from deliberately malformed cells and outputs: no case produced a different result, only
-  these error/no-error differences.
-- **Parity suite note**: `PARITY_SEED=1`, `3` and `4` make `parity/gen_nb.py:mutate_cell` raise
-  `IndexError` (`rng.choice(sorted(cell["attachments"]))` on an emptied attachments dict), so
-  those seeds cannot be run; seeds 0, 2 and 5 pass at scale 2.
+  predicates that raise upstream raise here too. Further differences:
+  - The brute-force LCS strips a common suffix of aligned items before evaluating the
+    predicate grid (see `docs/upstream-performance.md`). The stripped pairs are still compared
+    with their partner; only their comparisons with the other items are skipped, so a
+    malformed item there can avoid an error that upstream raises.
+  - Whether outputs align is decided from the alignment alone (`compare_outputs_approximate`):
+    the diffs of aligned output pairs, which upstream computes and discards, are not computed.
+    Those can only raise for shapes outside nbformat's schema, so the engine may return a
+    result where upstream raises.
+  - Identical notebooks with list sources, which upstream diffs without error, are an error
+    here ("text operands must be strings").
+- **Integration requirement**: upstream callers often pass `json.load` output (on-disk form,
+  list sources). Differential run on 300 such pairs: the engine errored where upstream
+  succeeded on 28. The PyO3 integration must fall back to the Python implementation when the
+  engine returns an error (or rejoin list sources into strings before calling it).
+- Found by a differential run of 7,500 predicate and 1,500 notebook cases built from
+  deliberately malformed cells and outputs: no case produced a different result, only these
+  error/no-error differences.
 
 ### F-019: `nbdiff a.ipynb a.ipynb` crashes on a JSON-scalar mime value
 - **What**: `add_mime_diff` sends every `application/json` (and `*+json`, `text/*`, ...) value to
@@ -113,6 +128,17 @@ anything requires explicit approval from the project owner (see CLAUDE.md).
   differ (`!=`), which is what `add_mime_diff` does for non-split mime types. The parity oracle
   applies the same fix; `test_u04_f019_fix_is_neutral` shows it changes nothing where upstream
   does not raise. Candidate for an upstream report (ask the owner first).
+
+### F-020: output metadata ignores do not apply to display data
+- **What**: `diff_single_outputs` diffs the part of a `display_data`/`execute_result` output
+  other than `data` (its `metadata`, `execution_count`) with the default configuration, not the
+  notebook one. So `nbdiff -M` (`targets` with `metadata=False`) and ignores on
+  `/cells/*/outputs/*/metadata` (or `.../data`) never hide those outputs' metadata changes.
+- **Evidence** (nbdime 4.0.4): one cell with a `display_data` output whose metadata is
+  `{"image/png": {"width": 100}}` against `{"image/png": {"width": 200}}`, `targets` with
+  `metadata=False`: both report the replace. Upstream's pretty-printer may hide some of these
+  paths in the terminal; the U06 unit handles that.
+- **Decision**: replicated (parity). Candidate for an upstream report (ask the owner first).
 
 ## Nondeterminism in upstream
 

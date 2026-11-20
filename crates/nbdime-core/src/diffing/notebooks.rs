@@ -10,7 +10,10 @@ use super::config::{DiffConfig, Differ, Predicate};
 use super::generic::{diff_values, diff_with_config};
 use super::DiffError;
 
-const OUTPUT_PATH: &str = "/cells/*/outputs/*";
+pub(super) const OUTPUTS_PATH: &str = "/cells/*/outputs";
+pub(super) const OUTPUT_PATH: &str = "/cells/*/outputs/*";
+const CELLS_PATH: &str = "/cells";
+const SOURCE_PATH: &str = "/cells/*/source";
 const ATTACHMENTS_PATH: &str = "/cells/*/attachments";
 
 /// MIME types whose values are diffed recursively instead of replaced.
@@ -46,6 +49,7 @@ impl Default for Targets {
 }
 
 /// What `set_notebook_diff_ignores` does with one path.
+#[derive(Clone)]
 enum Ignore {
     All,
     Reset,
@@ -68,8 +72,8 @@ impl Default for NotebookDiffConfig {
 /// The differ a path has when nothing was set for it.
 fn default_differ(path: &str) -> Differ {
     match path {
-        "/cells" | "/cells/*/outputs" => Differ::SequenceMultilevel,
-        "/cells/*/source" => Differ::StringLines,
+        CELLS_PATH | OUTPUTS_PATH => Differ::SequenceMultilevel,
+        SOURCE_PATH => Differ::StringLines,
         OUTPUT_PATH => Differ::SingleOutputs,
         ATTACHMENTS_PATH => Differ::Attachments,
         _ => Differ::Generic,
@@ -81,7 +85,7 @@ impl NotebookDiffConfig {
     pub fn new() -> Self {
         let mut config = DiffConfig::new(vec![Predicate::Eq], Differ::Generic);
         config.set_predicates(
-            "/cells",
+            CELLS_PATH,
             vec![
                 Predicate::CellApproximate,
                 Predicate::CellModerate,
@@ -90,13 +94,13 @@ impl NotebookDiffConfig {
             ],
         );
         config.set_predicates(
-            "/cells/*/outputs",
+            OUTPUTS_PATH,
             vec![Predicate::OutputApproximate, Predicate::OutputStrict],
         );
         for path in [
-            "/cells",
-            "/cells/*/source",
-            "/cells/*/outputs",
+            CELLS_PATH,
+            SOURCE_PATH,
+            OUTPUTS_PATH,
             OUTPUT_PATH,
             ATTACHMENTS_PATH,
         ] {
@@ -148,26 +152,19 @@ impl NotebookDiffConfig {
         };
         let flag = |on: bool| if on { Ignore::Reset } else { Ignore::All };
         let rules = [
-            ("/cells/*/source", flag(targets.sources)),
-            ("/cells/*/outputs", flag(targets.outputs)),
+            (SOURCE_PATH, flag(targets.sources)),
+            (OUTPUTS_PATH, flag(targets.outputs)),
             (ATTACHMENTS_PATH, flag(targets.attachments)),
             ("/metadata", flag(targets.metadata)),
             ("/cells/*/id", flag(targets.identifier)),
             ("/cells/*/metadata", flag(targets.metadata)),
             ("/cells/*/outputs/*/metadata", flag(targets.metadata)),
-            ("/cells/*", details_rule(&details)),
-            (OUTPUT_PATH, details_rule(&details)),
+            ("/cells/*", details.clone()),
+            (OUTPUT_PATH, details),
         ];
         for (path, rule) in rules {
             self.apply_ignore(path, rule);
         }
-    }
-}
-
-fn details_rule(rule: &Ignore) -> Ignore {
-    match rule {
-        Ignore::Keys(keys) => Ignore::Keys(keys.clone()),
-        _ => Ignore::Reset,
     }
 }
 
@@ -239,6 +236,19 @@ fn add_mime_diff(
     bvalue: &Value,
     di: &mut MappingDiffBuilder,
 ) -> Result<(), DiffError> {
+    let diffable = matches!(
+        (avalue, bvalue),
+        (Value::List(_), Value::List(_))
+            | (Value::Object(_), Value::Object(_))
+            | (Value::Str(_), Value::Str(_))
+    );
+    // Upstream's generic diff raises for any other pair, even equal ones (F-019).
+    if !diffable {
+        if !avalue.py_eq(bvalue) {
+            di.replace(key, bvalue.clone());
+        }
+        return Ok(());
+    }
     if let (Value::Str(a), Value::Str(b)) = (avalue, bvalue) {
         if a == b {
             return Ok(());
@@ -449,11 +459,34 @@ mod tests {
                 r#"{"op":"add","key":"z/y","value":2}]"#
             )
         );
-        // Equal values of a recursively diffed mimetype still need diffable types.
+        // F-019: values the generic diff cannot recurse into are replaced when they differ.
+        let scalar = |a: &str, b: &str| {
+            d(
+                &format!(r#"{{"text/plain":{a}}}"#),
+                &format!(r#"{{"text/plain":{b}}}"#),
+            )
+        };
+        assert_eq!(scalar("1", "1").unwrap(), "[]");
+        assert_eq!(scalar("1", "1.0").unwrap(), "[]");
+        assert_eq!(scalar("true", "1").unwrap(), "[]");
+        assert_eq!(scalar("null", "null").unwrap(), "[]");
         assert_eq!(
-            d(r#"{"text/plain":1}"#, r#"{"text/plain":1}"#),
-            Err(DiffError::UnsupportedTypes)
+            scalar("1", "2").unwrap(),
+            r#"[{"op":"replace","key":"text/plain","value":2}]"#
         );
+        assert_eq!(
+            scalar(r#""a""#, r#"["a"]"#).unwrap(),
+            r#"[{"op":"replace","key":"text/plain","value":["a"]}]"#
+        );
+        assert_eq!(scalar(r#"["a"]"#, r#"["a"]"#).unwrap(), "[]");
+        assert_eq!(
+            scalar(r#"{"a":1}"#, r#"["a"]"#)
+                .unwrap()
+                .matches("replace")
+                .count(),
+            1
+        );
+        assert_eq!(scalar("{}", "{}").unwrap(), "[]");
         assert_eq!(
             d(r#"{"Text/Plain":"a"}"#, r#"{"Text/Plain":"a"}"#).unwrap(),
             "[]"

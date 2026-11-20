@@ -1,6 +1,8 @@
 //! Approximate string comparison, used to align similar lines.
 
-use std::cell::OnceCell;
+use std::cell::{OnceCell, RefCell};
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::difflib::{
     quick_ratio, quick_ratio_sorted, real_quick_ratio, PositionIndex, SequenceMatcher,
@@ -12,12 +14,21 @@ use super::DiffError;
 
 const THRESHOLD: f64 = 0.7;
 
+/// Ratios remembered per string; later pairs are computed again when asked for again.
+const MAX_CACHED_RATIOS: usize = 2048;
+
+static NEXT_ID: AtomicU64 = AtomicU64::new(0);
+
 /// A string with the derived data that [`PreparedStr::is_similar`] needs, computed on first use
 /// and kept, so that comparing one string against many does the work once per string rather
-/// than once per pair.
+/// than once per pair. The ratio of each pair is kept as well: alignment asks about the same
+/// pair under several predicates and thresholds.
 pub(super) struct PreparedStr<'a> {
+    id: u64,
     text: &'a str,
     len: usize,
+    /// `SequenceMatcher(self, other).ratio()` by the `id` of `other`.
+    ratios: RefCell<HashMap<u64, f64>>,
     chars: OnceCell<Vec<char>>,
     sorted_chars: OnceCell<Vec<char>>,
     positions: OnceCell<PositionIndex<char>>,
@@ -26,8 +37,10 @@ pub(super) struct PreparedStr<'a> {
 impl<'a> PreparedStr<'a> {
     pub(super) fn new(text: &'a str) -> Self {
         PreparedStr {
+            id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
             text,
             len: py_len(text),
+            ratios: RefCell::new(HashMap::new()),
             chars: OnceCell::new(),
             sorted_chars: OnceCell::new(),
             positions: OnceCell::new(),
@@ -87,7 +100,19 @@ impl<'a> PreparedStr<'a> {
         if quick_ratio_sorted(self.sorted_chars(), y.sorted_chars()) < threshold {
             return false;
         }
-        SequenceMatcher::with_index(self.chars(), y.chars(), y.positions()).ratio() > threshold
+        self.ratio(y) > threshold
+    }
+
+    fn ratio(&self, y: &PreparedStr) -> f64 {
+        if let Some(&ratio) = self.ratios.borrow().get(&y.id) {
+            return ratio;
+        }
+        let ratio = SequenceMatcher::with_index(self.chars(), y.chars(), y.positions()).ratio();
+        let mut ratios = self.ratios.borrow_mut();
+        if ratios.len() < MAX_CACHED_RATIOS {
+            ratios.insert(y.id, ratio);
+        }
+        ratio
     }
 }
 
@@ -201,6 +226,33 @@ mod tests {
         }
         assert_eq!(x.text(), "abcdefgh");
         assert_eq!(similar.chars().len(), 8);
+    }
+
+    #[test]
+    fn a_pair_ratio_is_computed_once_and_serves_every_threshold() {
+        let x = PreparedStr::new("abcdefgh");
+        let y = PreparedStr::new("abcdefgx");
+        // ratio 14 / 16 = 0.875, asked at thresholds on both sides of it.
+        for _ in 0..2 {
+            assert!(x.is_similar(&y, 0.7, None));
+            assert!(!x.is_similar(&y, 0.95, None));
+            assert!(x.is_similar(&y, 0.875 - f64::EPSILON, None));
+            assert!(!x.is_similar(&y, 0.875, None));
+        }
+        assert_eq!(x.ratios.borrow().get(&y.id), Some(&0.875));
+        assert_eq!(x.ratios.borrow().len(), 1);
+    }
+
+    #[test]
+    fn ratios_are_remembered_for_a_bounded_number_of_partners() {
+        let x = PreparedStr::new("abcdefgh");
+        let partners: Vec<_> = (0..MAX_CACHED_RATIOS + 5)
+            .map(|_| PreparedStr::new("abcdefgx"))
+            .collect();
+        for y in &partners {
+            assert!(x.is_similar(y, 0.7, None));
+        }
+        assert_eq!(x.ratios.borrow().len(), MAX_CACHED_RATIOS);
     }
 
     #[test]

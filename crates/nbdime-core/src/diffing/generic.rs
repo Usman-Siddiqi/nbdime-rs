@@ -7,7 +7,7 @@ use crate::value::{Map, Value};
 use super::config::{join_path, DiffConfig};
 use super::predicates::Item;
 use super::sequence::try_diff_sequence_bruteforce;
-use super::snakes::{compute_diff_from_snakes, try_compute_snakes_multilevel};
+use super::snakes::{compute_diff_from_snakes, try_compute_snakes_multilevel, Snake};
 use super::strings::diff_strings_linewise;
 use super::{DiffError, MAX_DIFF_DEPTH};
 
@@ -114,6 +114,21 @@ pub(super) fn diff_sequence_multilevel(
     diff_sequence_multilevel_items(&a, &b, path, config)
 }
 
+/// The snakes of two item lists aligned with the predicates configured for `path`.
+pub(super) fn multilevel_snakes<'a>(
+    a: &[Item<'a>],
+    b: &[Item<'a>],
+    path: &str,
+    config: &DiffConfig,
+) -> Result<Vec<Snake>, DiffError> {
+    let predicates = config.predicates(root_if_empty(path));
+    let compares: Vec<_> = predicates
+        .iter()
+        .map(|&p| move |x: &Item<'a>, y: &Item<'a>| p.apply(x, y, config))
+        .collect();
+    try_compute_snakes_multilevel(a, b, &compares)
+}
+
 /// [`diff_sequence_multilevel`] on items that carry what the predicates derive from them, so
 /// that the derived data is computed once per item and not once per pair.
 pub(super) fn diff_sequence_multilevel_items<'a>(
@@ -122,12 +137,7 @@ pub(super) fn diff_sequence_multilevel_items<'a>(
     path: &str,
     config: &DiffConfig,
 ) -> Result<Diff, DiffError> {
-    let predicates = config.predicates(root_if_empty(path));
-    let compares: Vec<_> = predicates
-        .iter()
-        .map(|&p| move |x: &Item<'a>, y: &Item<'a>| p.apply(x, y, config))
-        .collect();
-    let snakes = try_compute_snakes_multilevel(a, b, &compares)?;
+    let snakes = multilevel_snakes(a, b, path, config)?;
     let subpath = join_path(path, "*");
     let differ = config.differ(&subpath);
     compute_diff_from_snakes(

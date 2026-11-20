@@ -11,7 +11,7 @@ use super::generic::{diff_sequence_multilevel, diff_values};
 use super::notebooks::{diff_attachments, diff_single_outputs};
 use super::predicates::{self, Item};
 use super::strings::{diff_string_lines, diff_strings_by_char};
-use super::DiffError;
+use super::{DiffError, MAX_DIFF_DEPTH};
 
 /// Decides whether two sequence items are "the same" for alignment.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -56,7 +56,13 @@ impl Predicate {
     }
 
     /// [`Predicate::apply`] for two plain values.
+    ///
+    /// Values nested deeper than [`MAX_DIFF_DEPTH`] are an error, as for the diff entry points:
+    /// outputs that embed cells make the predicates recurse through the values.
     pub fn compare(self, x: &Value, y: &Value, config: &DiffConfig) -> Result<bool, DiffError> {
+        if x.nesting_exceeds(MAX_DIFF_DEPTH) || y.nesting_exceeds(MAX_DIFF_DEPTH) {
+            return Err(DiffError::TooDeep(MAX_DIFF_DEPTH));
+        }
         if self == Predicate::Eq {
             return Ok(x.py_eq(y));
         }
@@ -128,6 +134,12 @@ pub(super) fn retain_unlisted_keys(diff: &mut Vec<DiffEntry>, keys: &[Value]) {
         };
         !keys.iter().any(|k| key.py_eq_item(k))
     });
+}
+
+/// Whether the sequence index `index` is in `keys`, as [`retain_unlisted_keys`] decides it.
+pub(super) fn index_listed(index: usize, keys: &[Value]) -> bool {
+    let key = Value::from(index);
+    keys.iter().any(|k| key.py_eq_item(k))
 }
 
 /// Predicates, differs and atomic-path overrides keyed by path (`/cells/*/source`).

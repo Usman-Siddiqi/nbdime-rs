@@ -69,26 +69,47 @@ pub fn dispatch(name: &str, args: &Value) -> Result<Value> {
     }
 }
 
-/// `{a, b, ignores?, targets?}`: ignores apply first, in object order, then the targets.
+/// `{a, b, ignores?, targets?}`: ignores apply first, in object order, then the targets. Both
+/// may be null, like an absent key. `targets` has the keyword arguments of
+/// `set_notebook_diff_targets`: absent ones are true and unknown ones are an error.
 fn diff_notebooks(args: &Value) -> Result<Value> {
     let mut config = NotebookDiffConfig::new();
-    if let Some(ignores) = args.get("ignores").and_then(Value::as_object) {
-        let ignores: Vec<_> = ignores
-            .iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect();
-        config.set_ignores(&ignores)?;
+    match args.get("ignores") {
+        None | Some(Value::Null) => {}
+        Some(Value::Object(ignores)) => {
+            let ignores: Vec<_> = ignores
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+            config.set_ignores(&ignores)?;
+        }
+        Some(_) => bail!("ignores must be an object"),
     }
-    if let Some(targets) = args.get("targets") {
-        let flag = |name: &str| arg(targets, name).map(Value::truthy);
-        config.set_targets(&Targets {
-            sources: flag("sources")?,
-            outputs: flag("outputs")?,
-            attachments: flag("attachments")?,
-            metadata: flag("metadata")?,
-            identifier: flag("identifier")?,
-            details: flag("details")?,
-        });
+    match args.get("targets") {
+        None | Some(Value::Null) => {}
+        Some(Value::Object(targets)) => {
+            const NAMES: [&str; 6] = [
+                "sources",
+                "outputs",
+                "attachments",
+                "metadata",
+                "identifier",
+                "details",
+            ];
+            if let Some(unknown) = targets.keys().find(|k| !NAMES.contains(&k.as_str())) {
+                bail!("unexpected target {unknown:?}");
+            }
+            let flag = |name: &str| targets.get(name).is_none_or(Value::truthy);
+            config.set_targets(&Targets {
+                sources: flag("sources"),
+                outputs: flag("outputs"),
+                attachments: flag("attachments"),
+                metadata: flag("metadata"),
+                identifier: flag("identifier"),
+                details: flag("details"),
+            });
+        }
+        Some(_) => bail!("targets must be an object"),
     }
     let diff = diffing::diff_notebooks(arg(args, "a")?, arg(args, "b")?, &config)?;
     Ok(diff_to_value(&diff))

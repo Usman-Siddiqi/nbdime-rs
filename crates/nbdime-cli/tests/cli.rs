@@ -208,15 +208,60 @@ fn revision_forms_follow_gitpython() {
         "HEAD~1..HEAD",
         "HEAD~1...HEAD",
         "HEAD^!",
+        "HEAD^{foo}",
+        "HEAD^{blob}",
+        "HEAD^{tree}~1",
+        "HEAD@{9}",
+        "@{-5}",
+        "HEAD@{-1}",
+        "HEAD@{yesterday}",
+        ":/",
+        ":/!x",
+        "HEAD:nope.ipynb",
+        "deadbee@{1}",
+        "unknown@{1}",
     ] {
         let output = sandbox.nbdiff(&repo, &["--no-color", rev]);
         assert_eq!(output.status.code(), Some(1), "{rev}");
         assert!(output.stdout.is_empty(), "{rev}: {}", text(&output.stdout));
         assert!(!output.stderr.is_empty(), "{rev}");
     }
-    // A name that git does not know is a file.
-    let missing = sandbox.nbdiff(&repo, &["--no-color", "nonexistent", "a.ipynb"]);
-    assert_eq!(text(&missing.stdout), "Missing file nonexistent\n");
+    // A name that git does not know is a file, and so is a `:path` that is not in the index
+    // (GitPython raises `BadName` for it).
+    for name in ["nonexistent", ":nope.ipynb"] {
+        let missing = sandbox.nbdiff(&repo, &["--no-color", name, "a.ipynb"]);
+        assert_eq!(text(&missing.stdout), format!("Missing file {name}\n"));
+    }
+    // A path in the index is a blob, which is no commit.
+    let blob = sandbox.nbdiff(&repo, &["--no-color", ":a.ipynb"]);
+    assert_eq!(blob.status.code(), Some(1));
+    assert!(blob.stdout.is_empty() && !blob.stderr.is_empty());
+}
+
+#[test]
+fn notebook_text_is_never_rewritten_like_a_file_name() {
+    let sandbox = Sandbox::new("private-use");
+    let dir = sandbox.dir("nb");
+    // U+10F780 stands for an undecodable byte in names; in notebook text it is just a character.
+    let text_in = "x = '\u{10F780}\u{10F7FF}'";
+    fs::write(dir.join("a.ipynb"), notebook("x = 1")).unwrap();
+    fs::write(dir.join("b.ipynb"), notebook(text_in)).unwrap();
+    let output = sandbox.nbdiff(&dir, &["--no-color", "a.ipynb", "b.ipynb"]);
+    assert_eq!(output.status.code(), Some(0));
+    let stdout = text(&output.stdout);
+    assert!(stdout.contains(text_in), "{stdout}");
+    assert!(!stdout.contains("\\udc"), "{stdout}");
+    // The same text on stderr, through the decisions of a merge.
+    let merge = sandbox
+        .command(env!("CARGO_BIN_EXE_nbmerge"), &dir)
+        .args(["a.ipynb", "a.ipynb", "b.ipynb", "--decisions"])
+        .output()
+        .unwrap();
+    assert!(
+        !text(&merge.stderr).contains("\\udc"),
+        "{}",
+        text(&merge.stderr)
+    );
 }
 
 #[test]

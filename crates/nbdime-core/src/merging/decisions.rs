@@ -5,6 +5,7 @@ use std::cmp::Ordering;
 use std::collections::HashMap;
 
 use crate::diff_format::{diff_from_value, diff_to_value, Diff, DiffEntry, Key, Op};
+use crate::log::{self, Level};
 use crate::patch::patch;
 use crate::path::{join_path, parse_int_string, star_path};
 use crate::value::{Int, Map, Value};
@@ -464,7 +465,15 @@ impl MergeDecisionBuilder {
                 )))
             }
             // A strategy that only applies at another level: not resolved here.
-            _ => return Ok(None),
+            other => {
+                log::emit(
+                    Level::Warning,
+                    "decisions",
+                    224,
+                    format!("Unhandled conflict strategy {other} on {}", join_path(path)),
+                );
+                return Ok(None);
+            }
         };
         self.add_decision(
             path.to_vec(),

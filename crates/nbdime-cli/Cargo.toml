@@ -12,9 +12,22 @@ authors.workspace = true
 name = "nbdime-rs-dev"
 path = "src/bin/dev.rs"
 
+[[bin]]
+name = "nbdime"
+path = "src/bin/nbdime.rs"
+
+[[bin]]
+name = "nbdiff"
+path = "src/bin/nbdiff.rs"
+
+[[bin]]
+name = "nbmerge"
+path = "src/bin/nbmerge.rs"
+
 [dependencies]
 nbdime-core.workspace = true
 anyhow.workspace = true
+libc.workspace = true
 
 [lints]
 workspace = true

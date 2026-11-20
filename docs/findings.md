@@ -363,12 +363,45 @@ doubled final newline, and a common last line that is repeated after the conflic
 
 ### F-029: command-line surface that is not byte-identical
 - `--version` prints nbdime-rs's own version (`nbdiff 0.x.y (nbdime-rs; compatible with nbdime
-  4.0.4)`), `--help` and usage texts are written by hand to match argparse closely but are not
-  compared byte for byte, and `--config` lists the same keys and effective values in our own
-  layout.
-- The Jupyter config path omits Python's `sys.prefix/etc/jupyter` (there is no Python prefix);
-  `$VIRTUAL_ENV` or `$CONDA_PREFIX` stand in for it.
+  4.0.4)`), and `--help` and usage texts are written by hand to match argparse closely but are not
+  compared byte for byte. `--config` (stderr, exit 1) is byte-identical to upstream: sorted keys,
+  the same entries, and `nbdime --config` lists all eleven entry points (`NbDiff`, `NbDiffWeb`,
+  `NbMerge`, `NbMergeWeb`, `NbShow`, `Server`, `Extension` and the four git driver/tool classes).
+- The Jupyter config path has no Python prefix: `$VIRTUAL_ENV` or `$CONDA_PREFIX` stand in for
+  `sys.prefix/etc/jupyter`. Upstream uses `sys.prefix` of the interpreter that runs nbdime, which
+  ignores `VIRTUAL_ENV`, so a differing `VIRTUAL_ENV` is the one place the config path can differ.
 - Where upstream crashes with a traceback, nbdime-rs exits 1 with a one-line error.
+- Subcommands of the `nbdime` dispatcher: `extensions` and `reg-extensions` are implemented with
+  upstream's messages (`--enable`/`--disable` run the four `jupyter` commands and ignore their
+  statuses). `show`, `diff-web`, `merge-web`, `server` and `config-git` are not ported; they exit 1
+  with our own "does not provide" message.
+- **Non-UTF-8 names**: argv and file names are kept as bytes. Undecodable bytes are held internally
+  as the code points U+10F780..U+10F7FF (the analogue of `surrogateescape`) and written back as the
+  original bytes when a path is opened. Upstream reconfigures stdout and stderr with
+  `backslashreplace`, so such a name prints as `\udcXX` on both streams; the port does the same
+  (this overrides the earlier plan to emit raw bytes on stdout). The escaping is applied where a
+  name or argument is formatted (diff headers, `Missing file`, log and error messages, the
+  mergetool `repr`), never to a stream, so notebook text in that private-use range is printed
+  unchanged. A genuine character of that range inside a name is indistinguishable from an escaped
+  byte, and prints as `\udcXX`.
+- **Undecodable file names inside a repository** (a revision diff, or the working tree against a
+  revision): upstream's GitPython stdout pump crashes on the name (a traceback on stderr, empty
+  stdout, exit status 0). nbdime-rs prints the correct diff instead. Deliberate deviation; it looks
+  like an upstream bug (not reported; ask the owner first).
+- **Stack**: the commands run on a thread with a 512 MiB stack. When that does not map (`ulimit
+  -v` or similar), the first size that does (128, 32, 8, 2 MiB) is only a probe and the run starts
+  from the next smaller one, so the heap keeps some address space; the main thread is the last
+  resort.
+- Config values of the wrong type fail with exit 1 where upstream misuses them; the shapes that
+  traitlets accepts (`""`, a list of pairs, a wrong-length `dict(...)` element) are reproduced.
+  Exotic mistyped values beyond those listed in F-031 may differ in the error message.
+- Repository discovery honours `GIT_WORK_TREE` and `GIT_COMMON_DIR` and handles linked worktrees
+  (`commondir`), submodule `.git` files, bare repositories and a working directory inside `.git`.
+  It does not read `core.worktree`, and `GIT_DIR` does not select the repository (upstream passes
+  the path to `Repo(path)`, so the variable is not consulted); `GIT_DIR` is exported to the git
+  commands, see F-031.
+- `os.path.exists(<int>)` (a numeric `base` in a config file is a file descriptor to Python) is
+  approximated by checking `/proc/self/fd/N`.
 - nbformat's schema validation messages that `nbformat.write` logs (F-013) are not reproduced.
 ### F-030: pretty-printer scope and quirks (U06)
 - `prettyprint` ports `config`, `format_value`, `hash_string`, `file_timestamp`, `pretty_print_notebook_diff`,
@@ -383,7 +416,11 @@ doubled final newline, and a common last line that is repeated after the conflic
 - **Type-change messages name `NotebookNode`, not `dict`**: for a dict-valued new value, upstream
   prints `type(value).__name__`. The harness hands the engine plain dicts that upstream sees as
   `DiffEntry`/`NotebookNode`; the engine prints `NotebookNode` for notebook-derived values like real
-  nbdime. Not a deviation from upstream itself.
+  nbdime. Not a deviation from upstream itself. The exception is the `nbdime-conflicts` value the
+  merge engine writes into metadata: it is a plain `dict` upstream, so the engine prints
+  `type changed from NotebookNode to dict` for it (`is_conflict_record`).
+- An invalid `use_color` (not equal to `True` or `False`) prints the three header lines and then
+  fails with exit 1, as the `KeyError`/`TypeError` upstream raises mid-print.
 - **Markdown highlighting** is a Pygments `MarkdownLexer` plus `Terminal256Formatter` port under
   `prettyprint/highlight`. A fenced code block whose language Pygments has a lexer for returns
   `Unsupported` (the engine has no other lexers); this is a known gap. Highlighting happens wherever
@@ -411,6 +448,81 @@ doubled final newline, and a common last line that is repeated after the conflic
   otherwise). Upstream raises `KeyError` for a `use_color` that is not equal to a bool (`1` and `0`
   work, it indexes a `{True, False}` dict) and reads the other three by truthiness; a deliberate
   tightening of a test interface.
+
+### F-031: command line behaviour reproduced or decided (U07)
+- **Config lookup includes the current directory**: `build_config` inserts `os.getcwd()` at the
+  front of Jupyter's config path, so `./nbdime_config.json` wins over every other file. Config
+  directories are expanded like traitlets' `filefind` (`expanduser` then `expandvars`), and `HOME`
+  unset falls back to the passwd entry. Sections are the classes in the entry point's MRO
+  (`NbdimeConfigurable`, `_Ignorables`, `_Diffing`, `Diff`, `GitDiff`, `NbDiff` for `nbdiff`;
+  `...Merge`, `NbMerge` for `nbmerge`), applied base class first. `Global` is not in the MRO of any
+  CLI entry point, so a `Global` section (and its `log_level`) has no effect upstream; reproduced.
+  Disk values are not validated upstream (the trait validation only runs for trait defaults).
+  Config shapes follow `traitlets.Config`: a top-level `""` is an empty configuration, a list of
+  pairs is a configuration, a pair list element of the wrong length is ignored (`ValueError`), and
+  `"version"`, `[1]`, `5`, a top-level `null` or a section that is neither a dict nor `null` are
+  errors (exit 1); a section that is `null` (`{"Diff": null}`) is pruned. A value of the wrong
+  type that upstream would misuse (`use_color`, `paths`, `base`) is an error here as well, except
+  that `use_color` fails mid-print as upstream does (F-030).
+- **`nbdime diff` and `nbdime merge` read no config**: their parser's `prog` is `nbdime`, which
+  is not an entry point name, and `ConfigBackedParser` swallows the `ValueError`. Reproduced.
+- **`pushd` does not restore the directory** (`utils.pushd` saves `os.curdir`, i.e. `"."`): after
+  the first working-tree notebook of a revision diff the process stays in the repository root,
+  relative `--out` paths resolve there, and from a subdirectory the second working-tree notebook
+  is looked up in the parent of the root (and reads as a missing file). Reproduced exactly,
+  including the `git check-attr` runs and their stderr. Candidate for an upstream report (ask the
+  owner first; nothing has been reported).
+- **A `None` base revision means the working tree** (`nbdiff a b c` with `a` not a revision gives
+  `base = remote = None`; `_get_diff_entry_stream` tests `ref_name is GitRefWorkingTree`, which
+  `None` satisfies): both sides are read from disk. Reproduced.
+- **GitPython is replaced by `git` subprocesses**, and its revision parser is ported. `repo.commit(rev)`
+  is `revparse::rev_parse`, GitPython's own grammar (`git.repo.fun.rev_parse` of the oracle's
+  GitPython 3.2.1), with the object lookups done by `git rev-parse --verify --quiet` (cached),
+  `cat-file -t`, `symbolic-ref` and the reflog files. Outcomes follow GitPython's exceptions:
+  - `BadName`, so the argument is a path: an unknown name, a `~n`/`^n` beyond the history, a
+    `:path` not in the index (`:nope.ipynb`), `:/text` with no match, `@{upstream}` without one (and
+    on anything that is not a `refs/heads/` reference, `HEAD@{u}` included).
+  - Any other exception, exit 1 with a one-line message on stderr (upstream: a traceback):
+    `^{type}` with an unknown type or a type the object cannot be made into (`^{blob}` of a
+    commit, `^{tag}` of a lightweight tag, `^{tree}~1`), reflog `@{n}` out of range or without a
+    reflog, `@{-n}` (out of range, or with an explicit `ref@{-n}`), `@{<anything but an integer
+    or git-time date>}` (`HEAD@{yesterday}`), `:/` with an empty pattern or `:/!x`, `rev:path`
+    where the path is not in the tree, `ref@{n}` where `ref` is not a reference (`deadbee@{1}`),
+    ranges and `^!`, a missing closing brace, and every revision that is not a commit
+    (`HEAD^{tree}`, `HEAD:a.ipynb`, `:a.ipynb`, a tag of a tree). `HEAD:path` is recognised as a
+    revision form and then exits 1, as upstream does.
+  - Not reproduced: reflog dates other than git's `<timestamp> <offset>` form (RFC 2822 and ISO
+    8601 dates exit 1 here; upstream resolves them), and GitPython's own reference-file lookup
+    (a name is looked up by git's rules, which agree with GitPython's list of prefixes).
+  Diffs use the same `diff`/`diff-tree --raw -z` commands GitPython runs, `cat-file blob`, and for
+  clean filters `check-attr -z filter` and `config --get -z`, with the filter command run by
+  `/bin/sh -c`. Repository discovery follows GitPython's `is_git_dir`: linked worktrees
+  (`commondir`), a working directory inside `.git`, `.git` files for submodules; bare
+  repositories exit 1 with a message on stderr. An empty pathspec is passed to git. A repository
+  without commits makes `is_gitref(None)` raise upstream; here too.
+- **`GIT_DIR` in the environment**: like GitPython, the git commands that read the repository
+  run with `GIT_DIR` set to the git directory that was found (absolute), `GIT_COMMON_DIR` too when
+  the environment sets it, and `GIT_OBJECT_DIRECTORY` made absolute. `GIT_DIR=.git` therefore keeps
+  meaning the repository that was found, whatever the working directory of the child.
+- **Log lines**: `[W module:line]` names the upstream module and call line for the merge
+  diagnostics (`strategies:217/224/465/468/638/707`, `decisions:224`) and `nbmergeapp`.
+  Not reproduced: the `DEBUG` records, the `generic:497/553/631` and `decisions:219` errors (each
+  is followed by an exception upstream), the quadratic "Found duplicated decisions" check
+  (`generic:702`), and Python `warnings` routed through logging.
+- **Config path** (F-029): `JUPYTER_PLATFORM_DIRS` is ignored, and the user-site directory
+  (`~/.local/etc/jupyter`) is not searched. The oracle does not search it either: virtual
+  environments and pipx installs disable user site, and `PYTHONUSERBASE` is ignored for the same
+  reason. A default Python install that enables user site would search it; not reproduced.
+- **Mergetool**: the skipped-files message uses Python's `repr` of the list (`\udcXX` for
+  undecodable bytes), and a `git` killed by a signal exits with `(-signal) & 0xFF` (SIGTERM is
+  241), as `sys.exit(-15)` does.
+- **`nbmerge --out`** serializes the merged notebook before opening the file, so a notebook that
+  cannot be written leaves an existing file alone.
+- **`argparse` edge**: `IgnorableAction` builds `ValueError(...)` without raising it for options
+  that are neither `-x` nor `--xyz`; unreachable here. The mixed positive/negative ignorables check
+  (`process_exclusive_ignorables`) raises `ArgumentError(None, ...)` *after* parsing, so it is a
+  traceback with exit status 1, not a usage error with status 2; reproduced (exit 1, message on
+  stderr). With `--config` the same conflict is raised by the parser and is a usage error (exit 2).
 
 ## Open questions
 

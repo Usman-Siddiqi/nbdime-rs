@@ -13,8 +13,8 @@ use super::highlight::colorize_markdown;
 use super::pformat::pformat;
 use super::render::diff_render;
 use super::{
-    file_timestamp, format_value, invalid, trim_base64, PrettyPrintConfig, PrettyPrintError, IND,
-    MAXWIDTH, MAX_DEPTH,
+    file_timestamp, format_value, invalid, trim_base64, PrettyPrintConfig, PrettyPrintError,
+    COLOR_ERROR, IND, MAXWIDTH, MAX_DEPTH,
 };
 
 type Result<T> = std::result::Result<T, PrettyPrintError>;
@@ -31,6 +31,11 @@ pub struct Printer<'a> {
     config: &'a PrettyPrintConfig,
     out: &'a mut String,
     depth: usize,
+    /// A colour was needed although `use_color` is invalid; nothing more is written.
+    color_failed: bool,
+    /// Printing decisions the merge engine made: the conflict record it builds is a plain `dict`,
+    /// where every dict of a notebook is a `NotebookNode`.
+    engine_values: bool,
 }
 
 const NOTEBOOK_DIFF_ENTRY_END: &str = "\n";
@@ -41,6 +46,8 @@ impl<'a> Printer<'a> {
             config,
             out,
             depth: 0,
+            color_failed: false,
+            engine_values: false,
         }
     }
 
@@ -56,7 +63,18 @@ impl<'a> Printer<'a> {
     }
 
     fn write(&mut self, text: &str) {
+        if self.color_failed || (self.config.invalid_color && text.contains(COLOR_ERROR)) {
+            self.color_failed = true;
+            return;
+        }
         self.out.push_str(text);
+    }
+
+    fn finished(&self) -> Result<()> {
+        if self.color_failed {
+            return Err(PrettyPrintError::InvalidColor);
+        }
+        Ok(())
     }
 
     pub fn key(&mut self, k: &str, prefix: &str) {
@@ -454,14 +472,14 @@ impl<'a> Printer<'a> {
                     return Ok(());
                 }
                 let aval = item_at(a, &e.key)?;
-                let typechange = if aval.same_type(bval) {
+                let record = self.engine_values
+                    && matches!(&e.key, Key::Name(k) if k == "nbdime-conflicts")
+                    && is_conflict_record(bval);
+                let typechange = if aval.same_type(bval) && !(record && aval.is_object()) {
                     String::new()
                 } else {
-                    format!(
-                        " (type changed from {} to {})",
-                        type_name(aval),
-                        type_name(bval)
-                    )
+                    let new = if record { "dict" } else { type_name(bval) };
+                    format!(" (type changed from {} to {new})", type_name(aval))
                 };
                 self.diff_action(&format!("replaced{typechange}"), &nextpath);
                 self.value_at(aval, Some(&nextpath), config.remove())?;
@@ -567,14 +585,21 @@ impl<'a> Printer<'a> {
         let atime = file_timestamp(afn)?;
         let btime = file_timestamp(bfn)?;
         self.write(&format!(
-            "nbdiff {afn} {bfn}\n--- {afn}  {atime}\n+++ {bfn}  {btime}\n"
+            "nbdiff {afn} {bfn}\n--- {afn}  {atime}\n+++ {bfn}  {btime}\n",
+            afn = crate::fsname::for_output(afn),
+            bfn = crate::fsname::for_output(bfn),
         ));
-        self.diff(a, di, "")
+        let result = self.diff(a, di, "");
+        self.finished()?;
+        result
     }
 
     /// `pretty_print_merge_decision` of a decision the merge engine made.
     pub fn merge_decision(&mut self, base: &Value, decision: &MergeDecision) -> Result<()> {
-        self.print_decision(base, &DecisionView::of_decision(decision))
+        self.engine_values = true;
+        let result = self.print_decision(base, &DecisionView::of_decision(decision));
+        self.engine_values = false;
+        result
     }
 
     /// `pretty_print_merge_decision` of a decision given as its JSON value, which may carry keys
@@ -655,10 +680,15 @@ impl<'a> Printer<'a> {
             "{conflicted} conflicted decisions of {} total:\n",
             decisions.len()
         ));
+        let mut result = Ok(());
         for decision in decisions {
-            self.merge_decision(base, decision)?;
+            result = self.merge_decision(base, decision);
+            if result.is_err() || self.color_failed {
+                break;
+            }
         }
-        Ok(())
+        self.finished()?;
+        result
     }
 
     /// `pretty_print_merge_decisions` of decisions given as JSON values.
@@ -831,6 +861,14 @@ fn iterate(value: &Value) -> Result<Vec<&Value>> {
     }
 }
 
+/// The value `resolve_strategy_record_conflicts` stores under `nbdime-conflicts`.
+fn is_conflict_record(value: &Value) -> bool {
+    matches!(value, Value::Object(m)
+        if m.len() == 2
+            && matches!(m.get("local_diff"), Some(Value::List(_)))
+            && matches!(m.get("remote_diff"), Some(Value::List(_))))
+}
+
 /// `type(value).__name__` of a value as nbformat reads it, where every dict is a `NotebookNode`.
 fn type_name(value: &Value) -> &'static str {
     match value.py_type() {
@@ -854,6 +892,7 @@ mod tests {
     fn plain() -> PrettyPrintConfig {
         PrettyPrintConfig {
             use_color: false,
+            invalid_color: false,
             use_git: false,
             use_diff: false,
             ..PrettyPrintConfig::default()
@@ -1020,6 +1059,7 @@ mod tests {
         );
         let colored = PrettyPrintConfig {
             use_color: true,
+            invalid_color: false,
             ..plain()
         };
         let out = notebook_diff(&colored, NOTEBOOK, diff).unwrap();
@@ -1120,6 +1160,7 @@ mod tests {
     fn merge_decisions_are_colored_with_their_own_markers() {
         let colored = PrettyPrintConfig {
             use_color: true,
+            invalid_color: false,
             ..plain()
         };
         let out = merge_decisions(&colored, DECISIONS).unwrap();
@@ -1240,6 +1281,37 @@ mod tests {
         ] {
             assert!(decision_values(&plain(), decision).is_err(), "{decision}");
         }
+    }
+
+    #[test]
+    fn the_engines_conflict_record_is_a_dict_not_a_notebook_node() {
+        let base = parse(r#"{"metadata": {"nbdime-conflicts": {"x": 1}}}"#).unwrap();
+        let decision = MergeDecision::from_value(
+            &parse(
+                r#"{"common_path": ["metadata"], "conflict": true, "action": "custom",
+                    "local_diff": null, "remote_diff": null,
+                    "custom_diff": [{"op": "replace", "key": "nbdime-conflicts",
+                        "value": {"local_diff": [], "remote_diff": []}}]}"#,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let mut out = String::new();
+        Printer::new(&plain(), &mut out)
+            .merge_decision(&base, &decision)
+            .unwrap();
+        assert!(
+            out.contains(
+                "## replaced (type changed from NotebookNode to dict) /metadata/nbdime-conflicts:"
+            ),
+            "{out}"
+        );
+        // Values that come from the harness or from notebooks are all notebook nodes.
+        let mut out = String::new();
+        Printer::new(&plain(), &mut out)
+            .merge_decision_value(&base, &decision.to_value())
+            .unwrap();
+        assert!(!out.contains("to dict"), "{out}");
     }
 
     #[test]

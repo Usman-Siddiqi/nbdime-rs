@@ -45,6 +45,9 @@ pub enum PrettyPrintError {
     /// `AttributeError`, `ValueError` and `AssertionError` upstream).
     #[error("{0}")]
     Invalid(String),
+    /// `use_color` is not a key of upstream's colour table (`KeyError` or `TypeError`).
+    #[error("invalid use_color value")]
+    InvalidColor,
     /// A value nested more deeply than upstream's recursion limit allows.
     #[error("value is nested more than {MAX_DEPTH} levels deep")]
     TooDeep,
@@ -77,8 +80,17 @@ pub struct PrettyPrintConfig {
     pub color_words: bool,
     pub use_git: bool,
     pub use_diff: bool,
+    /// Truthiness of `use_color`.
     pub use_color: bool,
+    /// `use_color` is something other than a boolean (or 0 or 1), so that upstream's `col_const`
+    /// lookup raises `KeyError` the first time a colour is needed: the colour accessors then
+    /// return [`COLOR_ERROR`].
+    pub invalid_color: bool,
 }
+
+/// What the colour accessors return when `use_color` is invalid; [`Printer`] stops at the write
+/// that contains it.
+pub(crate) const COLOR_ERROR: &str = "\u{10FFFF}";
 
 impl Default for PrettyPrintConfig {
     fn default() -> Self {
@@ -93,6 +105,7 @@ impl Default for PrettyPrintConfig {
             use_git: true,
             use_diff: true,
             use_color: true,
+            invalid_color: false,
         }
     }
 }
@@ -126,11 +139,17 @@ impl PrettyPrintConfig {
     }
 
     pub fn keep(&self) -> &'static str {
-        "   "
+        if self.invalid_color {
+            COLOR_ERROR
+        } else {
+            "   "
+        }
     }
 
     pub fn remove(&self) -> &'static str {
-        if self.use_color {
+        if self.invalid_color {
+            COLOR_ERROR
+        } else if self.use_color {
             "\x1b[31m-  "
         } else {
             "-  "
@@ -138,7 +157,9 @@ impl PrettyPrintConfig {
     }
 
     pub fn add(&self) -> &'static str {
-        if self.use_color {
+        if self.invalid_color {
+            COLOR_ERROR
+        } else if self.use_color {
             "\x1b[32m+  "
         } else {
             "+  "
@@ -146,7 +167,9 @@ impl PrettyPrintConfig {
     }
 
     pub fn info(&self) -> &'static str {
-        if self.use_color {
+        if self.invalid_color {
+            COLOR_ERROR
+        } else if self.use_color {
             "\x1b[34m\x1b[1m## "
         } else {
             "## "
@@ -154,7 +177,9 @@ impl PrettyPrintConfig {
     }
 
     pub fn reset(&self) -> &'static str {
-        if self.use_color {
+        if self.invalid_color {
+            COLOR_ERROR
+        } else if self.use_color {
             "\x1b[0m"
         } else {
             ""
@@ -165,7 +190,8 @@ impl PrettyPrintConfig {
 /// The modification time of `filename` as `datetime.fromtimestamp(mtime).isoformat(" ")`, or
 /// `(no timestamp)` if there is no such file.
 pub fn file_timestamp(filename: &str) -> Result<String, PrettyPrintError> {
-    let Ok(modified) = fs::metadata(filename).and_then(|m| m.modified()) else {
+    let Ok(modified) = fs::metadata(crate::fsname::to_path(filename)).and_then(|m| m.modified())
+    else {
         return Ok("(no timestamp)".into());
     };
     // `os.path.getmtime` is the float `sec + 1e-9 * nsec`, with a fraction that counts forward.
@@ -279,6 +305,7 @@ mod tests {
         assert_eq!(colored.reset(), "\x1b[0m");
         let plain = PrettyPrintConfig {
             use_color: false,
+            invalid_color: false,
             ..colored
         };
         assert_eq!(

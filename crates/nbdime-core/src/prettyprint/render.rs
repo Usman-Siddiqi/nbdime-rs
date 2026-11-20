@@ -777,6 +777,7 @@ mod tests {
     fn config(use_color: bool, color_words: bool) -> PrettyPrintConfig {
         PrettyPrintConfig {
             use_color,
+            invalid_color: false,
             color_words,
             ..PrettyPrintConfig::default()
         }

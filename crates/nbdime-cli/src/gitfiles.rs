@@ -4,8 +4,6 @@
 //! `rev-parse` for revisions and the `diff` and `diff-tree` raw formats GitPython parses, and
 //! `check-attr` and `config` for clean filters.
 
-use std::cell::RefCell;
-use std::collections::HashMap;
 use std::fs;
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
@@ -15,6 +13,7 @@ use anyhow::{anyhow, bail, Context, Result};
 
 use crate::osstr;
 use crate::pathexpand::{Env, ProcessEnv};
+use crate::revparse::{resolve_commit, tree_id};
 use crate::utils::{Source, EXPLICIT_MISSING_FILE};
 
 /// A git repository found from a directory (GitPython's `Repo`).
@@ -30,8 +29,36 @@ pub struct Repo {
 
 impl Repo {
     /// The directory git commands run in (`Repo.working_dir`).
-    fn work_dir(&self) -> &Path {
+    pub(crate) fn work_dir(&self) -> &Path {
         self.working_tree.as_deref().unwrap_or(&self.common_dir)
+    }
+
+    /// A git command as GitPython runs it: in the working directory, and with the repository
+    /// that was found pinned in the environment when the environment named one.
+    pub(crate) fn git(&self) -> Command {
+        self.git_with(&ProcessEnv)
+    }
+
+    fn git_with(&self, env: &dyn Env) -> Command {
+        let mut command = Command::new("git");
+        command
+            .current_dir(self.work_dir())
+            .env("LANGUAGE", "C")
+            .env("LC_ALL", "C")
+            .stdin(Stdio::null());
+        if env.get("GIT_COMMON_DIR").is_some() {
+            command
+                .env("GIT_DIR", &self.git_dir)
+                .env("GIT_COMMON_DIR", &self.common_dir);
+        } else if env.get("GIT_DIR").is_some() {
+            command.env("GIT_DIR", &self.git_dir);
+        }
+        if let Some(objects) = env.get("GIT_OBJECT_DIRECTORY") {
+            if let Ok(objects) = std::path::absolute(osstr::to_path(&objects)) {
+                command.env("GIT_OBJECT_DIRECTORY", objects);
+            }
+        }
+        command
     }
 }
 
@@ -275,16 +302,6 @@ pub fn get_repo(path: &Path) -> Option<Repo> {
     }
 }
 
-fn git(dir: &Path) -> Command {
-    let mut command = Command::new("git");
-    command
-        .current_dir(dir)
-        .env("LANGUAGE", "C")
-        .env("LC_ALL", "C")
-        .stdin(Stdio::null());
-    command
-}
-
 /// Runs `command`, returning its stdout if it succeeded.
 fn output_of(mut command: Command) -> Result<Vec<u8>> {
     let output = command.output().context("running git")?;
@@ -296,138 +313,6 @@ fn output_of(mut command: Command) -> Result<Vec<u8>> {
         );
     }
     Ok(output.stdout)
-}
-
-thread_local! {
-    /// `git rev-parse --verify` answers, per directory and revision.
-    static VERIFIED: RefCell<HashMap<(PathBuf, String), Option<String>>> = RefCell::new(HashMap::new());
-}
-
-/// The object id `git rev-parse --verify --quiet <rev>` names, if there is one.
-fn verify(dir: &Path, rev: &str) -> Option<String> {
-    if rev.starts_with('-') || rev.is_empty() {
-        return None;
-    }
-    let key = (dir.to_path_buf(), rev.to_owned());
-    if let Some(answer) = VERIFIED.with(|cache| cache.borrow().get(&key).cloned()) {
-        return answer;
-    }
-    let output = git(dir)
-        .args(["rev-parse", "--verify", "--quiet"])
-        .arg(osstr::to_os(rev))
-        .stderr(Stdio::null())
-        .output()
-        .ok();
-    let answer = output
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned());
-    VERIFIED.with(|cache| cache.borrow_mut().insert(key, answer.clone()));
-    answer
-}
-
-/// `object^{kind}` of an object id.
-fn peel(dir: &Path, object: &str, kind: &str) -> Option<String> {
-    verify(dir, &format!("{object}^{{{kind}}}"))
-}
-
-/// Where GitPython's revision parser (`rev_parse`) raises a `ValueError` instead of `BadName`:
-/// the position of the first token that is not part of its grammar. Names and `:`-paths have none.
-fn invalid_token(rev: &str) -> Option<usize> {
-    let bytes = rev.as_bytes();
-    let first = bytes.iter().enumerate().find_map(|(i, &b)| match b {
-        b'^' | b'~' | b':' => Some(i),
-        b'@' => match bytes.get(i + 1) {
-            None | Some(b'^' | b'~' | b':' | b'{') if i == 0 => Some(i),
-            Some(b'{') => Some(i),
-            _ => None,
-        },
-        _ => None,
-    })?;
-    if first == 0 && bytes[0] != b'@' {
-        return Some(0);
-    }
-    let closing = |open: usize| -> Option<usize> {
-        let (mut depth, mut escaped) = (1, false);
-        for (i, &b) in bytes.iter().enumerate().skip(open + 1) {
-            match b {
-                _ if escaped => escaped = false,
-                b'\\' => escaped = true,
-                b'{' => depth += 1,
-                b'}' => {
-                    depth -= 1;
-                    if depth == 0 {
-                        return Some(i);
-                    }
-                }
-                _ => {}
-            }
-        }
-        None
-    };
-    let mut start = if first == 0 && !rev.starts_with("@{") {
-        1
-    } else if first == 0 {
-        0
-    } else {
-        first
-    };
-    while start < bytes.len() {
-        let token = bytes[start];
-        let at = start;
-        if token == b'@' {
-            if bytes.get(start + 1) != Some(&b'{') {
-                return Some(at);
-            }
-            match closing(start + 1) {
-                Some(end) => {
-                    start = end + 1;
-                    continue;
-                }
-                None => return Some(at),
-            }
-        }
-        if token == b':' {
-            return None;
-        }
-        start += 1;
-        if token == b'^' && bytes.get(start) == Some(&b'{') {
-            match closing(start) {
-                Some(end) => {
-                    start = end + 1;
-                    continue;
-                }
-                None => return Some(at),
-            }
-        }
-        while bytes.get(start).is_some_and(u8::is_ascii_digit) {
-            start += 1;
-        }
-        if token != b'~' && token != b'^' {
-            return Some(at);
-        }
-    }
-    None
-}
-
-/// The commit `rev` names, `Ok(None)` if it names nothing, and an error where GitPython raises
-/// something other than `BadName`: a revision it cannot parse, or one that is not a commit.
-fn resolve_commit(repo: &Repo, rev: &str) -> Result<Option<String>> {
-    let dir = repo.work_dir();
-    if let Some(object) = verify(dir, rev) {
-        return match peel(dir, &object, "commit") {
-            Some(commit) => Ok(Some(commit)),
-            None => bail!("Cannot convert object {object} to type commit"),
-        };
-    }
-    if rev.starts_with(":/") {
-        return Ok(None);
-    }
-    match invalid_token(rev) {
-        Some(at) if at == 0 || verify(dir, &rev[..at]).is_some() => {
-            bail!("Invalid token in revision specifier: {rev:?}")
-        }
-        _ => Ok(None),
-    }
 }
 
 /// `is_valid_gitref(ref)`: whether the current directory is in a repository that has the
@@ -532,8 +417,8 @@ fn apply_possible_filter(git_path: &str) -> Result<Option<Source>> {
     let Some(command) = clean_filter_command(&attr) else {
         return Ok(None);
     };
-    let input =
-        fs::File::open(osstr::to_path(git_path)).with_context(|| format!("opening {git_path}"))?;
+    let input = fs::File::open(osstr::to_path(git_path))
+        .with_context(|| format!("opening {}", osstr::show(git_path)))?;
     // `shell=True` runs `/bin/sh`, whatever `sh` the PATH offers.
     let output = Command::new("/bin/sh")
         .arg("-c")
@@ -598,7 +483,7 @@ fn clean_filter_command(attr: &str) -> Option<String> {
 /// `_get_diff_entry_stream`: the notebook at `path` in `rev` (`None`: the working tree), the
 /// null file if it is absent there, or `None` if `path` is not a notebook.
 fn diff_entry_stream(
-    repo: &Path,
+    repo: &Repo,
     repo_dir: &Path,
     path: &str,
     blob: Option<&str>,
@@ -619,7 +504,8 @@ fn diff_entry_stream(
         return Ok(Some(match fs::read(osstr::to_path(path)) {
             Ok(bytes) => Source::Stream {
                 name: path.to_owned(),
-                text: String::from_utf8(bytes).map_err(|e| anyhow!("{path}: {e}"))?,
+                text: String::from_utf8(bytes)
+                    .map_err(|e| anyhow!("{}: {e}", osstr::show(path)))?,
             },
             Err(_) => Source::Path(EXPLICIT_MISSING_FILE.into()),
         }));
@@ -628,11 +514,11 @@ fn diff_entry_stream(
         return Ok(Some(Source::Path(EXPLICIT_MISSING_FILE.into())));
     };
     let bytes = output_of({
-        let mut command = git(repo);
+        let mut command = repo.git();
         command.args(["cat-file", "blob", blob]);
         command
     })?;
-    let text = String::from_utf8(bytes).map_err(|e| anyhow!("{path}: {e}"))?;
+    let text = String::from_utf8(bytes).map_err(|e| anyhow!("{}: {e}", osstr::show(path)))?;
     Ok(Some(Source::Stream {
         name: format!("{path} ({rev})"),
         text,
@@ -673,10 +559,10 @@ pub fn changed_notebooks(
         let name = rev.unwrap_or("HEAD");
         let commit = resolve_commit(&repo, name)?
             .ok_or_else(|| anyhow!("Ref {name:?} did not resolve to a commit"))?;
-        peel(repo.work_dir(), &commit, "tree").ok_or_else(|| anyhow!("Ref {name:?} has no tree"))
+        tree_id(&repo, &commit).ok_or_else(|| anyhow!("Ref {name:?} has no tree"))
     };
     let base_tree = tree_of(base)?;
-    let mut command = git(&root);
+    let mut command = repo.git();
     match remote {
         None => command.args(["diff", &base_tree]),
         Some(remote) => command.args(["diff-tree", &base_tree, &tree_of(Some(remote))?, "-r"]),
@@ -699,7 +585,7 @@ pub fn changed_notebooks(
     let mut status = 0;
     for entry in entries {
         let Some(fa) = diff_entry_stream(
-            &root,
+            &repo,
             &repo_dir,
             &entry.a_path,
             entry.a_blob.as_deref(),
@@ -709,7 +595,7 @@ pub fn changed_notebooks(
             continue;
         };
         let Some(fb) = diff_entry_stream(
-            &root,
+            &repo,
             &repo_dir,
             &entry.b_path,
             entry.b_blob.as_deref(),
@@ -761,33 +647,6 @@ mod tests {
         assert!(parse_raw(b"garbage\0").is_err());
     }
 
-    #[test]
-    fn tokens_outside_gitpythons_revision_grammar() {
-        for rev in [
-            "HEAD",
-            "main",
-            "v1..HEAD",
-            "a...b",
-            "HEAD~",
-            "HEAD~12",
-            "HEAD^2",
-            "HEAD^{tree}",
-            "@{1}",
-            "HEAD@{upstream}",
-            "HEAD:a.ipynb",
-            "@",
-        ] {
-            assert_eq!(invalid_token(rev), None, "{rev}");
-        }
-        assert_eq!(invalid_token("HEAD~1..HEAD"), Some(6));
-        assert_eq!(invalid_token("HEAD~1...HEAD"), Some(6));
-        assert_eq!(invalid_token("HEAD^!"), Some(5));
-        assert_eq!(invalid_token("^HEAD"), Some(0));
-        assert_eq!(invalid_token("HEAD^{tree"), Some(4));
-        assert_eq!(invalid_token("HEAD@x"), None);
-        assert_eq!(invalid_token("HEAD~1@x"), Some(6));
-    }
-
     fn sandbox(name: &str) -> TempDir {
         TempDir::new(&format!("gitfiles-{name}"))
     }
@@ -821,6 +680,46 @@ mod tests {
         fs::write(repo.join("a.ipynb"), "2").unwrap();
         run_git(&repo, &["commit", "-q", "-am", "two"]);
         repo
+    }
+
+    #[test]
+    fn children_are_pinned_to_the_repository_the_environment_named() {
+        let dir = sandbox("pinned");
+        let repo = get_repo(&repository(&dir)).unwrap();
+        let pinned = |env: &[(&str, &str)]| -> Vec<(String, String)> {
+            let env: std::collections::HashMap<String, String> = env
+                .iter()
+                .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+                .collect();
+            repo.git_with(&env)
+                .get_envs()
+                .filter(|(k, _)| k.to_string_lossy().starts_with("GIT_"))
+                .map(|(k, v)| {
+                    (
+                        k.to_string_lossy().into_owned(),
+                        v.unwrap().to_string_lossy().into_owned(),
+                    )
+                })
+                .collect()
+        };
+        assert!(pinned(&[]).is_empty());
+        let git_dir = repo.git_dir.to_string_lossy().into_owned();
+        // GitPython exports the repository it found, as an absolute path, whatever the
+        // environment's spelling was.
+        assert_eq!(
+            pinned(&[("GIT_DIR", ".git")]),
+            [("GIT_DIR".to_owned(), git_dir.clone())]
+        );
+        let common = repo.common_dir.to_string_lossy().into_owned();
+        let mut both = pinned(&[("GIT_COMMON_DIR", "x")]);
+        both.sort();
+        assert_eq!(
+            both,
+            [
+                ("GIT_COMMON_DIR".to_owned(), common),
+                ("GIT_DIR".to_owned(), git_dir)
+            ]
+        );
     }
 
     #[test]
@@ -887,57 +786,6 @@ mod tests {
         // A `.git` file that is not a gitfile ends the search like git does for GitPython.
         fs::write(plain.join(".git"), "not a gitfile").unwrap();
         assert_eq!(repo_at(&plain), None);
-    }
-
-    #[test]
-    fn revisions_resolve_to_commits_or_fail_like_gitpython() {
-        let dir = sandbox("revisions");
-        let repo = get_repo(&repository(&dir)).unwrap();
-        let head = resolve_commit(&repo, "HEAD").unwrap().unwrap();
-        assert_eq!(head.len(), 40);
-        for rev in [
-            "main",
-            "HEAD~1",
-            "v1",
-            "v1^{commit}",
-            ":/one fix",
-            "@",
-            "HEAD^0",
-        ] {
-            assert!(resolve_commit(&repo, rev).unwrap().is_some(), "{rev}");
-        }
-        assert_ne!(resolve_commit(&repo, "v1").unwrap(), Some(head));
-        // Names git does not know are not revisions, even with GitPython's grammar tokens.
-        for rev in [
-            "nonexistent",
-            "v1..HEAD",
-            "nope~1..x",
-            ":/no such commit",
-            "HEAD~9",
-        ] {
-            assert_eq!(resolve_commit(&repo, rev).unwrap(), None, "{rev}");
-        }
-        // Objects that are no commits, and tokens GitPython cannot parse, are errors.
-        for rev in [
-            "HEAD^{tree}",
-            "HEAD:a.ipynb",
-            "treetag",
-            "HEAD~1..HEAD",
-            "HEAD~1...HEAD",
-            "HEAD^!",
-        ] {
-            assert!(resolve_commit(&repo, rev).is_err(), "{rev}");
-        }
-    }
-
-    #[test]
-    fn answers_are_cached() {
-        let dir = sandbox("cache");
-        let repo = get_repo(&repository(&dir)).unwrap();
-        let first = resolve_commit(&repo, "HEAD~1").unwrap();
-        let key = (repo.work_dir().to_path_buf(), "HEAD~1".to_owned());
-        assert!(VERIFIED.with(|cache| cache.borrow().contains_key(&key)));
-        assert_eq!(resolve_commit(&repo, "HEAD~1").unwrap(), first);
     }
 
     #[test]

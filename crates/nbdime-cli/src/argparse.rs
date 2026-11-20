@@ -397,10 +397,11 @@ impl Parser {
 }
 
 fn is_negative_number(arg: &str) -> bool {
-    // `^-\d+$|^-\d*\.\d+$`
+    // `^-\d+$|^-\d*\.\d+$`, where `$` also matches before a final newline.
     let Some(rest) = arg.strip_prefix('-') else {
         return false;
     };
+    let rest = rest.strip_suffix('\n').unwrap_or(rest);
     let digits = |s: &str| !s.is_empty() && s.chars().all(|c| decimal_digit(c).is_some());
     if digits(rest) {
         return true;
@@ -958,6 +959,8 @@ mod tests {
         assert_eq!(ns.str("base"), Some("-1"));
         assert_eq!(ns.str("remote"), Some("-2.5"));
         assert!(is_negative_number("-.5") && !is_negative_number("-a") && !is_negative_number("-"));
+        assert!(is_negative_number("-1\n") && is_negative_number("-1.5\n"));
+        assert!(!is_negative_number("-1\n\n") && !is_negative_number("-\n"));
     }
 
     #[test]

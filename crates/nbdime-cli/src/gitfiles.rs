@@ -4,37 +4,259 @@
 //! `rev-parse` for revisions and the `diff` and `diff-tree` raw formats GitPython parses, and
 //! `check-attr` and `config` for clean filters.
 
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::fs;
+use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use anyhow::{anyhow, bail, Context, Result};
 
+use crate::osstr;
+use crate::pathexpand::{Env, ProcessEnv};
 use crate::utils::{Source, EXPLICIT_MISSING_FILE};
 
-/// A git repository found from a directory.
+/// A git repository found from a directory (GitPython's `Repo`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Repo {
+    pub git_dir: PathBuf,
+    pub common_dir: PathBuf,
     /// `None` for a bare repository.
     pub working_tree: Option<PathBuf>,
     /// Directories between the working tree and the directory the search started in.
     pub popped: Vec<String>,
 }
 
-fn is_git_dir(path: &Path) -> bool {
-    path.join("objects").is_dir() && path.join("refs").is_dir() && path.join("HEAD").exists()
+impl Repo {
+    /// The directory git commands run in (`Repo.working_dir`).
+    fn work_dir(&self) -> &Path {
+        self.working_tree.as_deref().unwrap_or(&self.common_dir)
+    }
 }
 
-/// Whether `dir` is a repository's working tree: `.git` is a git directory, or a file naming one.
-fn is_working_tree(dir: &Path) -> bool {
-    let dotgit = dir.join(".git");
-    if dotgit.is_dir() {
-        return is_git_dir(&dotgit);
+/// What `git.repo.fun.is_git_dir` makes of a directory.
+enum GitDirKind {
+    Yes,
+    No,
+    /// A linked worktree's administrative directory in a state GitPython refuses
+    /// (`WorkTreeRepositoryUnsupported`, an `InvalidGitRepositoryError`).
+    Unsupported,
+}
+
+fn var(name: &str) -> Option<String> {
+    ProcessEnv.get(name)
+}
+
+/// `os.path.normpath` for paths with a root or without.
+fn normpath(path: &Path) -> PathBuf {
+    let mut parts: Vec<Component> = Vec::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => match parts.last() {
+                Some(Component::Normal(_)) => {
+                    parts.pop();
+                }
+                Some(Component::RootDir) => {}
+                _ => parts.push(component),
+            },
+            other => parts.push(other),
+        }
     }
-    fs::read_to_string(&dotgit)
-        .ok()
-        .and_then(|text| text.strip_prefix("gitdir: ").map(|p| p.trim().to_owned()))
-        .is_some_and(|target| is_git_dir(&dir.join(target)))
+    let result: PathBuf = parts.iter().collect();
+    if result.as_os_str().is_empty() {
+        PathBuf::from(".")
+    } else {
+        result
+    }
+}
+
+fn is_git_dir(dir: &Path) -> GitDirKind {
+    if !dir.is_dir() {
+        return GitDirKind::No;
+    }
+    let head = dir.join("HEAD");
+    let valid_head = match fs::symlink_metadata(&head) {
+        Ok(meta) if meta.file_type().is_symlink() => fs::read_link(&head)
+            .map(|target| target.starts_with("refs"))
+            .unwrap_or(false),
+        _ => fs::File::open(&head)
+            .and_then(|mut file| {
+                let mut buffer = Vec::new();
+                file.by_ref().take(256).read_to_end(&mut buffer)?;
+                Ok(buffer)
+            })
+            .map(|head| {
+                let is_sha = head.len() >= 40 && head[..40].iter().all(u8::is_ascii_hexdigit);
+                let symbolic = head
+                    .strip_prefix(b"ref:")
+                    .is_some_and(|rest| rest.trim_ascii_start().starts_with(b"refs/"));
+                symbolic || is_sha
+            })
+            .unwrap_or(false),
+    };
+    let common_dir = match var("GIT_COMMON_DIR") {
+        Some(value) if value.is_empty() => return GitDirKind::No,
+        Some(value) => osstr::to_path(&value),
+        None => match fs::read(dir.join("commondir")) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                if fs::symlink_metadata(dir.join("commondir")).is_ok() {
+                    return GitDirKind::No;
+                }
+                dir.to_path_buf()
+            }
+            Err(_) => return GitDirKind::No,
+            Ok(bytes) => {
+                let text = osstr::from_bytes(&bytes);
+                let text = text.trim_end_matches(['\r', '\n']);
+                if text.is_empty() {
+                    return GitDirKind::No;
+                }
+                match fs::canonicalize(dir.join(osstr::to_path(text))) {
+                    Ok(path) => path,
+                    Err(_) => normpath(&dir.join(osstr::to_path(text))),
+                }
+            }
+        },
+    };
+    let objects = var("GIT_OBJECT_DIRECTORY")
+        .map(|d| osstr::to_path(&d))
+        .unwrap_or_else(|| common_dir.join("objects"));
+    if valid_head && objects.is_dir() && common_dir.join("refs").is_dir() {
+        return GitDirKind::Yes;
+    }
+    if dir.join("gitdir").is_file() && dir.join("commondir").is_file() && head.is_file() {
+        return GitDirKind::Unsupported;
+    }
+    GitDirKind::No
+}
+
+/// `find_submodule_git_dir`: the git directory that `dotgit` (a directory, or a file naming one)
+/// stands for.
+fn find_submodule_git_dir(dotgit: &Path) -> Option<Result<PathBuf, ()>> {
+    match is_git_dir(dotgit) {
+        GitDirKind::Yes => return Some(Ok(dotgit.to_path_buf())),
+        GitDirKind::Unsupported => return Some(Err(())),
+        GitDirKind::No => {}
+    }
+    let meta = fs::metadata(dotgit).ok()?;
+    if !meta.is_file() || meta.len() > 1 << 20 {
+        return None;
+    }
+    let bytes = fs::read(dotgit).ok()?;
+    let text = std::str::from_utf8(&bytes)
+        .ok()?
+        .trim_end_matches(['\r', '\n']);
+    let target = text.strip_prefix("gitdir: ").filter(|t| !t.is_empty())?;
+    let mut target = osstr::to_path(target);
+    if target.is_relative() {
+        target = normpath(&dotgit.parent()?.join(target));
+    }
+    match is_git_dir(&target) {
+        GitDirKind::Yes => Some(Ok(target)),
+        GitDirKind::Unsupported => Some(Err(())),
+        GitDirKind::No => None,
+    }
+}
+
+/// `core.bare` of a repository's own config file, which is all GitPython's reader looks at.
+fn config_says_bare(config: &Path) -> bool {
+    let Ok(text) = fs::read_to_string(config) else {
+        return false;
+    };
+    let mut in_core = false;
+    for line in text.lines() {
+        let line = line.trim();
+        if let Some(section) = line.strip_prefix('[') {
+            in_core = section
+                .split(']')
+                .next()
+                .is_some_and(|name| name.trim().eq_ignore_ascii_case("core"));
+        } else if in_core {
+            if let Some((key, value)) = line.split_once('=') {
+                if key.trim().eq_ignore_ascii_case("bare") {
+                    return matches!(
+                        value.trim().to_ascii_lowercase().as_str(),
+                        "true" | "yes" | "on" | "1"
+                    );
+                }
+            }
+        }
+    }
+    false
+}
+
+/// `Repo(path)` without searching parent directories.
+fn repo_at(dir: &Path) -> Option<Repo> {
+    let dotgit = dir.join(".git");
+    let (git_dir, mut working_tree) = match find_submodule_git_dir(&dotgit) {
+        Some(Ok(git_dir)) => (normpath(&dir.join(git_dir)), dir.to_path_buf()),
+        Some(Err(())) => return None,
+        None => {
+            // Like git, never fall back to the parent when `.git` is a file that is not a gitfile.
+            if dotgit.exists() && !dotgit.is_dir() {
+                return None;
+            }
+            match is_git_dir(dir) {
+                GitDirKind::Yes => {}
+                GitDirKind::No | GitDirKind::Unsupported => return None,
+            }
+            let linked = dir.join("gitdir").is_file() && dir.join("commondir").is_file();
+            let tree = if linked {
+                match var("GIT_WORK_TREE") {
+                    Some(tree) => osstr::to_path(&tree),
+                    None => {
+                        let text = osstr::from_bytes(&fs::read(dir.join("gitdir")).ok()?);
+                        let mut gitfile = osstr::to_path(text.trim());
+                        if gitfile.is_relative() {
+                            gitfile = normpath(&dir.join(gitfile));
+                        }
+                        gitfile.parent()?.to_path_buf()
+                    }
+                }
+            } else {
+                var("GIT_WORK_TREE")
+                    .map(|tree| osstr::to_path(&tree))
+                    .unwrap_or_else(|| dir.parent().map(Path::to_path_buf).unwrap_or_default())
+            };
+            (dir.to_path_buf(), tree)
+        }
+    };
+    let common_dir = match var("GIT_COMMON_DIR") {
+        Some(common) => std::path::absolute(osstr::to_path(&common)).ok()?,
+        None => match fs::read(git_dir.join("commondir")) {
+            Ok(bytes) => {
+                let text = osstr::from_bytes(&bytes);
+                git_dir.join(osstr::to_path(text.trim_end_matches(['\r', '\n'])))
+            }
+            Err(_) => PathBuf::new(),
+        },
+    };
+    let config_dir = if common_dir.as_os_str().is_empty() {
+        &git_dir
+    } else {
+        &common_dir
+    };
+    let mut bare = config_says_bare(&config_dir.join("config"));
+    // A linked worktree is not bare even when its main repository is.
+    if bare && git_dir.join("commondir").is_file() {
+        bare = false;
+    }
+    let common_dir = if common_dir.as_os_str().is_empty() {
+        git_dir.clone()
+    } else {
+        common_dir
+    };
+    if bare {
+        working_tree = PathBuf::new();
+    }
+    Some(Repo {
+        git_dir,
+        common_dir,
+        working_tree: (!bare).then_some(working_tree),
+        popped: Vec::new(),
+    })
 }
 
 /// `get_repo(path)`: the repository `path` is in (or is the top of), or `None`.
@@ -43,28 +265,20 @@ pub fn get_repo(path: &Path) -> Option<Repo> {
     let mut current = fs::canonicalize(&absolute).unwrap_or(absolute);
     let mut popped = Vec::new();
     loop {
-        if is_working_tree(&current) {
-            return Some(Repo {
-                working_tree: Some(current),
-                popped,
-            });
+        if let Some(mut repo) = repo_at(&current) {
+            repo.popped = popped;
+            return Some(repo);
         }
-        if is_git_dir(&current) {
-            return Some(Repo {
-                working_tree: None,
-                popped,
-            });
-        }
-        let name = current.file_name()?.to_string_lossy().into_owned();
+        let name = osstr::from_os(current.file_name()?);
         popped.insert(0, name);
         current = current.parent()?.to_path_buf();
     }
 }
 
-fn git(repo: &Path) -> Command {
+fn git(dir: &Path) -> Command {
     let mut command = Command::new("git");
     command
-        .current_dir(repo)
+        .current_dir(dir)
         .env("LANGUAGE", "C")
         .env("LC_ALL", "C")
         .stdin(Stdio::null());
@@ -84,22 +298,136 @@ fn output_of(mut command: Command) -> Result<Vec<u8>> {
     Ok(output.stdout)
 }
 
-/// The object `rev` names, peeled to `kind` (`commit` or `tree`); `None` is `HEAD`.
-fn rev_parse(repo: &Path, rev: Option<&str>, kind: &str) -> Option<String> {
-    let rev = rev.unwrap_or("HEAD");
-    if rev.starts_with('-') {
+thread_local! {
+    /// `git rev-parse --verify` answers, per directory and revision.
+    static VERIFIED: RefCell<HashMap<(PathBuf, String), Option<String>>> = RefCell::new(HashMap::new());
+}
+
+/// The object id `git rev-parse --verify --quiet <rev>` names, if there is one.
+fn verify(dir: &Path, rev: &str) -> Option<String> {
+    if rev.starts_with('-') || rev.is_empty() {
         return None;
     }
-    let output = git(repo)
+    let key = (dir.to_path_buf(), rev.to_owned());
+    if let Some(answer) = VERIFIED.with(|cache| cache.borrow().get(&key).cloned()) {
+        return answer;
+    }
+    let output = git(dir)
         .args(["rev-parse", "--verify", "--quiet"])
-        .arg(format!("{rev}^{{{kind}}}"))
+        .arg(osstr::to_os(rev))
         .stderr(Stdio::null())
         .output()
-        .ok()?;
-    output
-        .status
-        .success()
-        .then(|| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+        .ok();
+    let answer = output
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned());
+    VERIFIED.with(|cache| cache.borrow_mut().insert(key, answer.clone()));
+    answer
+}
+
+/// `object^{kind}` of an object id.
+fn peel(dir: &Path, object: &str, kind: &str) -> Option<String> {
+    verify(dir, &format!("{object}^{{{kind}}}"))
+}
+
+/// Where GitPython's revision parser (`rev_parse`) raises a `ValueError` instead of `BadName`:
+/// the position of the first token that is not part of its grammar. Names and `:`-paths have none.
+fn invalid_token(rev: &str) -> Option<usize> {
+    let bytes = rev.as_bytes();
+    let first = bytes.iter().enumerate().find_map(|(i, &b)| match b {
+        b'^' | b'~' | b':' => Some(i),
+        b'@' => match bytes.get(i + 1) {
+            None | Some(b'^' | b'~' | b':' | b'{') if i == 0 => Some(i),
+            Some(b'{') => Some(i),
+            _ => None,
+        },
+        _ => None,
+    })?;
+    if first == 0 && bytes[0] != b'@' {
+        return Some(0);
+    }
+    let closing = |open: usize| -> Option<usize> {
+        let (mut depth, mut escaped) = (1, false);
+        for (i, &b) in bytes.iter().enumerate().skip(open + 1) {
+            match b {
+                _ if escaped => escaped = false,
+                b'\\' => escaped = true,
+                b'{' => depth += 1,
+                b'}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(i);
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    };
+    let mut start = if first == 0 && !rev.starts_with("@{") {
+        1
+    } else if first == 0 {
+        0
+    } else {
+        first
+    };
+    while start < bytes.len() {
+        let token = bytes[start];
+        let at = start;
+        if token == b'@' {
+            if bytes.get(start + 1) != Some(&b'{') {
+                return Some(at);
+            }
+            match closing(start + 1) {
+                Some(end) => {
+                    start = end + 1;
+                    continue;
+                }
+                None => return Some(at),
+            }
+        }
+        if token == b':' {
+            return None;
+        }
+        start += 1;
+        if token == b'^' && bytes.get(start) == Some(&b'{') {
+            match closing(start) {
+                Some(end) => {
+                    start = end + 1;
+                    continue;
+                }
+                None => return Some(at),
+            }
+        }
+        while bytes.get(start).is_some_and(u8::is_ascii_digit) {
+            start += 1;
+        }
+        if token != b'~' && token != b'^' {
+            return Some(at);
+        }
+    }
+    None
+}
+
+/// The commit `rev` names, `Ok(None)` if it names nothing, and an error where GitPython raises
+/// something other than `BadName`: a revision it cannot parse, or one that is not a commit.
+fn resolve_commit(repo: &Repo, rev: &str) -> Result<Option<String>> {
+    let dir = repo.work_dir();
+    if let Some(object) = verify(dir, rev) {
+        return match peel(dir, &object, "commit") {
+            Some(commit) => Ok(Some(commit)),
+            None => bail!("Cannot convert object {object} to type commit"),
+        };
+    }
+    if rev.starts_with(":/") {
+        return Ok(None);
+    }
+    match invalid_token(rev) {
+        Some(at) if at == 0 || verify(dir, &rev[..at]).is_some() => {
+            bail!("Invalid token in revision specifier: {rev:?}")
+        }
+        _ => Ok(None),
+    }
 }
 
 /// `is_valid_gitref(ref)`: whether the current directory is in a repository that has the
@@ -108,21 +436,20 @@ fn is_valid_gitref(rev: Option<&str>) -> Result<bool> {
     let Some(repo) = get_repo(Path::new(".")) else {
         return Ok(false);
     };
-    let Some(root) = repo.working_tree.as_deref().or(None) else {
-        return Ok(false);
+    let Some(rev) = rev else {
+        return match resolve_commit(&repo, "HEAD")? {
+            Some(_) => Ok(true),
+            None => bail!("Reference at 'HEAD' does not exist"),
+        };
     };
-    match (rev_parse(root, rev, "commit"), rev) {
-        (Some(_), _) => Ok(true),
-        (None, None) => bail!("Reference at 'HEAD' does not exist"),
-        (None, Some(_)) => Ok(false),
-    }
+    Ok(resolve_commit(&repo, rev)?.is_some())
 }
 
 /// `is_gitref(candidate)`: a revision, as opposed to a file name. A name that is both is a file.
 pub fn is_gitref(candidate: Option<&str>) -> Result<bool> {
     let usable = match candidate {
         None => true,
-        Some(c) => !Path::new(c).exists() && c != EXPLICIT_MISSING_FILE && !c.is_empty(),
+        Some(c) => !osstr::to_path(c).exists() && c != EXPLICIT_MISSING_FILE && !c.is_empty(),
     };
     if !usable {
         return Ok(false);
@@ -162,7 +489,7 @@ const NULL_SHA: &str = "0000000000000000000000000000000000000000";
 /// Parses the `--raw -z` format the way GitPython's `Diff` does: a blob is absent for an added
 /// (a side) or deleted (b side) file and for the null id.
 fn parse_raw(output: &[u8]) -> Result<Vec<RawEntry>> {
-    let text = String::from_utf8_lossy(output);
+    let text = osstr::from_bytes(output);
     let mut tokens = text.split('\0').filter(|t| !t.is_empty());
     let mut entries = Vec::new();
     while let Some(meta) = tokens.next() {
@@ -205,11 +532,13 @@ fn apply_possible_filter(git_path: &str) -> Result<Option<Source>> {
     let Some(command) = clean_filter_command(&attr) else {
         return Ok(None);
     };
-    let input = fs::File::open(git_path).with_context(|| format!("opening {git_path}"))?;
-    let output = Command::new("sh")
+    let input =
+        fs::File::open(osstr::to_path(git_path)).with_context(|| format!("opening {git_path}"))?;
+    // `shell=True` runs `/bin/sh`, whatever `sh` the PATH offers.
+    let output = Command::new("/bin/sh")
         .arg("-c")
         // Python merges the filter's stderr into its stdout.
-        .arg(format!("exec 2>&1; {command}"))
+        .arg(osstr::to_os(&format!("exec 2>&1; {command}")))
         .stdin(Stdio::from(input))
         .output()
         .context("running the git filter")?;
@@ -225,7 +554,7 @@ fn apply_possible_filter(git_path: &str) -> Result<Option<Source>> {
 fn interrogate_filter(path: &str) -> Result<Option<String>> {
     let Ok(output) = Command::new("git")
         .args(["check-attr", "-z", "filter"])
-        .arg(path)
+        .arg(osstr::to_os(path))
         .stderr(Stdio::inherit())
         .output()
     else {
@@ -238,7 +567,7 @@ fn interrogate_filter(path: &str) -> Result<Option<String>> {
         .stdout
         .split(|b| *b == 0)
         .take(3)
-        .map(|p| String::from_utf8_lossy(p).into_owned())
+        .map(osstr::from_bytes)
         .collect();
     let [path_list, attr, info] = parts.as_slice() else {
         return Ok(None);
@@ -279,13 +608,15 @@ fn diff_entry_stream(
         return Ok(None);
     }
     let Some(rev) = rev else {
-        // `pushd` upstream restores the directory it was given, which is the current one.
+        // Upstream's `pushd` goes back to `os.curdir`, which is `"."`: the process stays in
+        // `repo_dir`, and `repo_dir` (relative to where it started) is applied again for every
+        // further entry. Timestamps and later files depend on it, so it is reproduced.
         std::env::set_current_dir(repo_dir)
             .with_context(|| format!("changing to {}", repo_dir.display()))?;
         if let Some(filtered) = apply_possible_filter(path)? {
             return Ok(Some(filtered));
         }
-        return Ok(Some(match fs::read(path) {
+        return Ok(Some(match fs::read(osstr::to_path(path)) {
             Ok(bytes) => Source::Stream {
                 name: path.to_owned(),
                 text: String::from_utf8(bytes).map_err(|e| anyhow!("{path}: {e}"))?,
@@ -318,6 +649,7 @@ pub fn changed_notebooks(
     mut handle: impl FnMut(Source, Source) -> Result<i32>,
 ) -> Result<i32> {
     let repo = get_repo(Path::new(".")).ok_or_else(|| anyhow!("not a git repository"))?;
+    // `os.path.relpath(None, ...)` is a TypeError upstream.
     let root = repo
         .working_tree
         .clone()
@@ -328,22 +660,20 @@ pub fn changed_notebooks(
         Some(paths) if !repo.popped.is_empty() => paths
             .iter()
             .map(|p| {
-                let mut joined: PathBuf = repo.popped.iter().collect();
-                joined.push(p);
-                joined.to_string_lossy().into_owned()
+                let mut joined: PathBuf = repo.popped.iter().map(|d| osstr::to_path(d)).collect();
+                joined.push(osstr::to_path(p));
+                osstr::from_os(joined.as_os_str())
             })
             .collect(),
         Some(paths) => paths.to_vec(),
         None => Vec::new(),
     };
 
-    let tree_of = |rev: Option<&str>| {
-        rev_parse(&root, rev, "tree").ok_or_else(|| {
-            anyhow!(
-                "Ref {:?} did not resolve to a commit",
-                rev.unwrap_or("HEAD")
-            )
-        })
+    let tree_of = |rev: Option<&str>| -> Result<String> {
+        let name = rev.unwrap_or("HEAD");
+        let commit = resolve_commit(&repo, name)?
+            .ok_or_else(|| anyhow!("Ref {name:?} did not resolve to a commit"))?;
+        peel(repo.work_dir(), &commit, "tree").ok_or_else(|| anyhow!("Ref {name:?} has no tree"))
     };
     let base_tree = tree_of(base)?;
     let mut command = git(&root);
@@ -359,9 +689,10 @@ pub fn changed_notebooks(
         "-z",
         "--no-color",
     ]);
-    let paths: Vec<&String> = paths.iter().filter(|p| !p.is_empty()).collect();
     if !paths.is_empty() {
-        command.arg("--").args(paths);
+        command
+            .arg("--")
+            .args(paths.iter().map(|p| osstr::to_os(p)));
     }
     let entries = parse_raw(&output_of(command)?)?;
 
@@ -398,6 +729,7 @@ pub fn changed_notebooks(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testutil::TempDir;
 
     #[test]
     fn relpath_between_directories() {
@@ -427,6 +759,185 @@ mod tests {
         assert_eq!(entries[3].a_path, "old.ipynb");
         assert_eq!(entries[3].b_path, "moved.ipynb");
         assert!(parse_raw(b"garbage\0").is_err());
+    }
+
+    #[test]
+    fn tokens_outside_gitpythons_revision_grammar() {
+        for rev in [
+            "HEAD",
+            "main",
+            "v1..HEAD",
+            "a...b",
+            "HEAD~",
+            "HEAD~12",
+            "HEAD^2",
+            "HEAD^{tree}",
+            "@{1}",
+            "HEAD@{upstream}",
+            "HEAD:a.ipynb",
+            "@",
+        ] {
+            assert_eq!(invalid_token(rev), None, "{rev}");
+        }
+        assert_eq!(invalid_token("HEAD~1..HEAD"), Some(6));
+        assert_eq!(invalid_token("HEAD~1...HEAD"), Some(6));
+        assert_eq!(invalid_token("HEAD^!"), Some(5));
+        assert_eq!(invalid_token("^HEAD"), Some(0));
+        assert_eq!(invalid_token("HEAD^{tree"), Some(4));
+        assert_eq!(invalid_token("HEAD@x"), None);
+        assert_eq!(invalid_token("HEAD~1@x"), Some(6));
+    }
+
+    fn sandbox(name: &str) -> TempDir {
+        TempDir::new(&format!("gitfiles-{name}"))
+    }
+
+    fn run_git(dir: &Path, args: &[&str]) {
+        let output = Command::new("git")
+            .current_dir(dir)
+            .args(args)
+            .env("HOME", dir)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_AUTHOR_NAME", "t")
+            .env("GIT_AUTHOR_EMAIL", "t@example.com")
+            .env("GIT_COMMITTER_NAME", "t")
+            .env("GIT_COMMITTER_EMAIL", "t@example.com")
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "git {args:?}: {output:?}");
+    }
+
+    /// A repository with two commits, a tag on the first and a subdirectory.
+    fn repository(dir: &TempDir) -> PathBuf {
+        let repo = fs::canonicalize(&dir.0).unwrap().join("repo");
+        fs::create_dir_all(repo.join("sub/deeper")).unwrap();
+        run_git(&repo, &["init", "-q", "-b", "main"]);
+        fs::write(repo.join("a.ipynb"), "1").unwrap();
+        run_git(&repo, &["add", "-A"]);
+        run_git(&repo, &["commit", "-q", "-m", "one fix"]);
+        run_git(&repo, &["tag", "v1"]);
+        run_git(&repo, &["tag", "treetag", "HEAD^{tree}"]);
+        fs::write(repo.join("a.ipynb"), "2").unwrap();
+        run_git(&repo, &["commit", "-q", "-am", "two"]);
+        repo
+    }
+
+    #[test]
+    fn repositories_are_found_from_inside_them() {
+        let dir = sandbox("find");
+        let repo = repository(&dir);
+        let found = get_repo(&repo).unwrap();
+        assert_eq!(found.working_tree.as_deref(), Some(repo.as_path()));
+        assert!(found.popped.is_empty());
+        assert_eq!(found.git_dir, repo.join(".git"));
+        let sub = get_repo(&repo.join("sub/deeper")).unwrap();
+        assert_eq!(sub.working_tree.as_deref(), Some(repo.as_path()));
+        assert_eq!(sub.popped, ["sub", "deeper"]);
+        // Inside the git directory the parent is the working tree.
+        let inside = get_repo(&repo.join(".git")).unwrap();
+        assert_eq!(inside.working_tree.as_deref(), Some(repo.as_path()));
+        assert!(inside.popped.is_empty());
+        let objects = get_repo(&repo.join(".git/objects")).unwrap();
+        assert_eq!(objects.working_tree.as_deref(), Some(repo.as_path()));
+        assert_eq!(objects.popped, ["objects"]);
+    }
+
+    #[test]
+    fn linked_worktrees_follow_the_common_directory() {
+        let dir = sandbox("worktree");
+        let repo = repository(&dir);
+        let linked = repo.parent().unwrap().join("linked");
+        run_git(
+            &repo,
+            &["worktree", "add", "-q", linked.to_str().unwrap(), "HEAD"],
+        );
+        let found = get_repo(&linked.join("..").join("linked")).unwrap();
+        assert_eq!(found.working_tree.as_deref(), Some(linked.as_path()));
+        assert_eq!(normpath(&found.common_dir), repo.join(".git"));
+        assert!(found.git_dir.starts_with(repo.join(".git/worktrees")));
+        let commit = resolve_commit(&found, "HEAD").unwrap();
+        assert!(commit.is_some());
+        // The administrative directory itself is a worktree as well.
+        let admin = get_repo(&found.git_dir).unwrap();
+        assert_eq!(admin.working_tree.as_deref(), Some(linked.as_path()));
+    }
+
+    #[test]
+    fn bare_repositories_have_no_working_tree() {
+        let dir = sandbox("bare");
+        let repo = repository(&dir);
+        let bare = repo.parent().unwrap().join("bare.git");
+        run_git(
+            &repo,
+            &["clone", "-q", "--bare", ".", bare.to_str().unwrap()],
+        );
+        let found = get_repo(&bare).unwrap();
+        assert_eq!(found.working_tree, None);
+        assert_eq!(found.work_dir(), found.common_dir);
+        assert!(resolve_commit(&found, "HEAD~1").unwrap().is_some());
+        assert!(get_repo(&bare.join("refs")).unwrap().working_tree.is_none());
+    }
+
+    #[test]
+    fn directories_outside_repositories_are_not_found() {
+        let dir = sandbox("outside");
+        let plain = fs::canonicalize(&dir.0).unwrap().join("plain");
+        fs::create_dir_all(&plain).unwrap();
+        // A `.git` file that is not a gitfile ends the search like git does for GitPython.
+        fs::write(plain.join(".git"), "not a gitfile").unwrap();
+        assert_eq!(repo_at(&plain), None);
+    }
+
+    #[test]
+    fn revisions_resolve_to_commits_or_fail_like_gitpython() {
+        let dir = sandbox("revisions");
+        let repo = get_repo(&repository(&dir)).unwrap();
+        let head = resolve_commit(&repo, "HEAD").unwrap().unwrap();
+        assert_eq!(head.len(), 40);
+        for rev in [
+            "main",
+            "HEAD~1",
+            "v1",
+            "v1^{commit}",
+            ":/one fix",
+            "@",
+            "HEAD^0",
+        ] {
+            assert!(resolve_commit(&repo, rev).unwrap().is_some(), "{rev}");
+        }
+        assert_ne!(resolve_commit(&repo, "v1").unwrap(), Some(head));
+        // Names git does not know are not revisions, even with GitPython's grammar tokens.
+        for rev in [
+            "nonexistent",
+            "v1..HEAD",
+            "nope~1..x",
+            ":/no such commit",
+            "HEAD~9",
+        ] {
+            assert_eq!(resolve_commit(&repo, rev).unwrap(), None, "{rev}");
+        }
+        // Objects that are no commits, and tokens GitPython cannot parse, are errors.
+        for rev in [
+            "HEAD^{tree}",
+            "HEAD:a.ipynb",
+            "treetag",
+            "HEAD~1..HEAD",
+            "HEAD~1...HEAD",
+            "HEAD^!",
+        ] {
+            assert!(resolve_commit(&repo, rev).is_err(), "{rev}");
+        }
+    }
+
+    #[test]
+    fn answers_are_cached() {
+        let dir = sandbox("cache");
+        let repo = get_repo(&repository(&dir)).unwrap();
+        let first = resolve_commit(&repo, "HEAD~1").unwrap();
+        let key = (repo.work_dir().to_path_buf(), "HEAD~1".to_owned());
+        assert!(VERIFIED.with(|cache| cache.borrow().contains_key(&key)));
+        assert_eq!(resolve_commit(&repo, "HEAD~1").unwrap(), first);
     }
 
     #[test]

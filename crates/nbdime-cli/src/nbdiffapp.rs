@@ -2,9 +2,8 @@
 
 use std::fs;
 use std::io::Write;
-use std::path::Path;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, Context as _, Result};
 use nbdime_core::diff_format::diff_to_value;
 use nbdime_core::diffing::{diff_notebooks, NotebookDiffConfig};
 use nbdime_core::json::{self, DumpOptions};
@@ -14,11 +13,12 @@ use nbdime_core::Value;
 use crate::argparse::{Action, Namespace, Parser};
 use crate::args::{
     add_base_args_for_diff, add_diff_args, add_diff_cli_args, add_generic_args,
-    add_prettyprint_args, apply_config, parse_command_line, prettyprint_config, process_diff_flags,
-    resolve_diff_args, Parsed,
+    add_prettyprint_args, apply_config, parse_command_line, pathspecs, prettyprint_config,
+    process_diff_flags, resolve_diff_args, Parsed,
 };
+use crate::config::Context;
 use crate::gitfiles::{changed_notebooks, is_gitref};
-use crate::logging::Logger;
+use crate::osstr;
 use crate::utils::{read_notebook, Fallback, Source, EXPLICIT_MISSING_FILE};
 
 const DESCRIPTION: &str = "Compute the difference between two Jupyter notebooks.";
@@ -39,10 +39,15 @@ pub fn build_parser(prog: &str) -> Parser {
 /// Runs `nbdiff` with the arguments `args` (without the program name) and returns the exit
 /// status. Text for stdout is written to `out`.
 pub fn main(prog: &str, args: &[String], out: &mut dyn Write) -> Result<i32> {
+    run(&Context::process(), prog, args, out)
+}
+
+/// [`main`] in the process `ctx` describes.
+pub fn run(ctx: &Context, prog: &str, args: &[String], out: &mut dyn Write) -> Result<i32> {
     let mut diff_config = NotebookDiffConfig::new();
     let mut parser = build_parser(prog);
-    apply_config(&mut parser, &mut diff_config)?;
-    let mut ns = match parse_command_line(&parser, args, crate::VERSION, prog) {
+    apply_config(ctx, &mut parser, &mut diff_config)?;
+    let mut ns = match parse_command_line(ctx, &parser, args, crate::VERSION, prog) {
         Parsed::Namespace(ns) => ns,
         Parsed::Exit {
             stdout,
@@ -51,14 +56,10 @@ pub fn main(prog: &str, args: &[String], out: &mut dyn Write) -> Result<i32> {
         } => {
             out.write_all(stdout.as_bytes())?;
             out.flush()?;
-            eprint!("{stderr}");
+            crate::osstr::eprint(&stderr);
             return Ok(code);
         }
     };
-    let mut logger = Logger::default();
-    if let Some(level) = &ns.log_level {
-        logger.set_level(level);
-    }
     main_diff(&mut ns, &mut diff_config, out)
 }
 
@@ -83,7 +84,7 @@ fn main_diff(
         return changed_notebooks(
             base.as_deref(),
             remote.as_deref(),
-            paths.as_deref(),
+            pathspecs(paths.as_ref())?.as_deref(),
             |a, b| handle_diff(a, b, output.as_deref(), ns, diff_config, out),
         );
     }
@@ -108,7 +109,7 @@ fn handle_diff(
 ) -> Result<i32> {
     for source in [&base, &remote] {
         if let Source::Path(path) = source {
-            if !Path::new(path).exists() && path != EXPLICIT_MISSING_FILE {
+            if !osstr::to_path(path).exists() && path != EXPLICIT_MISSING_FILE {
                 writeln!(out, "Missing file {path}")?;
                 out.flush()?;
                 return Ok(1);
@@ -125,7 +126,8 @@ fn handle_diff(
 
     if let Some(output) = output {
         // Opened (and truncated) before anything is written, like `open(output, "w")`.
-        let mut file = fs::File::create(output).with_context(|| format!("opening {output}"))?;
+        let mut file = fs::File::create(osstr::to_path(output))
+            .with_context(|| format!("opening {output}"))?;
         let text = json::dumps(&diff_to_value(&diff), &DumpOptions::nbdime_diff_file());
         file.write_all(text.as_bytes())?;
     } else {
@@ -155,7 +157,7 @@ mod tests {
         let dir = TempDir::new("nbdiff-missing");
         let a = dir.write("a.ipynb", &notebook(&["x = 1"]));
         let missing = dir.path("nope.ipynb");
-        let (code, out) = run_app(main, "nbdiff", &[&a, &missing]);
+        let (code, out) = run_app(run, "nbdiff", &[&a, &missing]);
         assert_eq!(code, 1);
         assert_eq!(out, format!("Missing file {missing}\n"));
     }
@@ -164,7 +166,7 @@ mod tests {
     fn identical_notebooks_print_nothing() {
         let dir = TempDir::new("nbdiff-same");
         let a = dir.write("a.ipynb", &notebook(&["x = 1"]));
-        let (code, out) = run_app(main, "nbdiff", &[&a, &a]);
+        let (code, out) = run_app(run, "nbdiff", &[&a, &a]);
         assert_eq!((code, out.as_str()), (0, ""));
     }
 
@@ -174,7 +176,7 @@ mod tests {
         let a = dir.write("a.ipynb", &notebook(&["x = 1"]));
         let b = dir.write("b.ipynb", &notebook(&["x = 2"]));
         let target = dir.path("diff.json");
-        let (code, out) = run_app(main, "nbdiff", &[&a, &b, "--out", &target]);
+        let (code, out) = run_app(run, "nbdiff", &[&a, &b, "--out", &target]);
         assert_eq!((code, out.as_str()), (0, ""));
         let written = fs::read_to_string(&target).unwrap();
         assert!(written.starts_with("[\n  {\n    \"op\": \"patch\""));
@@ -186,7 +188,7 @@ mod tests {
         let dir = TempDir::new("nbdiff-text");
         let a = dir.write("a.ipynb", &notebook(&["x = 1"]));
         let b = dir.write("b.ipynb", &notebook(&["x = 2"]));
-        let (code, out) = run_app(main, "nbdiff", &[&a, &b, "--no-color", "--no-git"]);
+        let (code, out) = run_app(run, "nbdiff", &[&a, &b, "--no-color", "--no-git"]);
         assert_eq!(code, 0);
         assert!(out.starts_with(&format!("nbdiff {a} {b}\n--- {a}  ")));
         assert!(out.contains("## modified /cells/0/source:\n-  x = 1\n+  x = 2\n"));
@@ -196,7 +198,7 @@ mod tests {
     fn null_file_against_a_notebook() {
         let dir = TempDir::new("nbdiff-null");
         let a = dir.write("a.ipynb", &notebook(&["x = 1"]));
-        let (code, out) = run_app(main, "nbdiff", &["/dev/null", &a, "--no-color"]);
+        let (code, out) = run_app(run, "nbdiff", &["/dev/null", &a, "--no-color"]);
         assert_eq!(code, 0);
         assert!(out.starts_with(&format!("nbdiff /dev/null {a}\n")));
         assert!(run_app_err(&["/dev/null", "/dev/null"]));
@@ -204,7 +206,13 @@ mod tests {
 
     fn run_app_err(args: &[&str]) -> bool {
         let args: Vec<String> = args.iter().map(|s| (*s).to_owned()).collect();
-        main("nbdiff", &args, &mut Vec::new()).is_err()
+        run(
+            &crate::testutil::isolated(),
+            "nbdiff",
+            &args,
+            &mut Vec::new(),
+        )
+        .is_err()
     }
 
     #[test]
@@ -221,9 +229,9 @@ mod tests {
     fn usage_errors_exit_with_two() {
         let dir = TempDir::new("nbdiff-usage");
         let a = dir.write("a.ipynb", &notebook(&["x = 1"]));
-        let (code, _) = run_app(main, "nbdiff", &["--bogus-flag", &a, &a]);
+        let (code, _) = run_app(run, "nbdiff", &["--bogus-flag", &a, &a]);
         assert_eq!(code, 2);
-        let (code, out) = run_app(main, "nbdiff", &["--version"]);
+        let (code, out) = run_app(run, "nbdiff", &["--version"]);
         assert_eq!(code, 0);
         assert!(out.starts_with("nbdiff "));
     }

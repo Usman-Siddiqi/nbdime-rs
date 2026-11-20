@@ -4,11 +4,11 @@ use anyhow::{anyhow, bail, Result};
 use nbdime_core::diffing::{NotebookDiffConfig, Targets};
 use nbdime_core::json::{self, DumpOptions};
 use nbdime_core::merging::MergeArgs;
-use nbdime_core::prettyprint::PrettyPrintConfig;
-use nbdime_core::Value;
+use nbdime_core::prettyprint::{PrettyPrintConfig, Printer};
+use nbdime_core::{Map, Value};
 
 use crate::argparse::{Action, ExitRequest, Kind, Namespace, Nargs, ParseError, Parser};
-use crate::config::{self, ConfigError};
+use crate::config::{self, ConfigError, Context};
 use crate::gitfiles::is_gitref;
 
 /// `diff_ignorables`.
@@ -155,9 +155,13 @@ pub fn add_base_args_for_diff(parser: &mut Parser) {
 
 /// What `ConfigBackedParser.parse_known_args` does before parsing: the config files give the
 /// parser its defaults and the notebook differ its ignores.
-pub fn apply_config(parser: &mut Parser, diff_config: &mut NotebookDiffConfig) -> Result<()> {
+pub fn apply_config(
+    ctx: &Context,
+    parser: &mut Parser,
+    diff_config: &mut NotebookDiffConfig,
+) -> Result<()> {
     let entrypoint = parser.prog.split(' ').next().unwrap_or_default().to_owned();
-    let mut defaults = match config::build_config(&entrypoint, false) {
+    let mut defaults = match config::build_config(ctx, &entrypoint, false) {
         Ok(defaults) => defaults,
         Err(ConfigError::Ignored(_)) => return Ok(()),
         Err(ConfigError::Fatal(message)) => bail!("{message}"),
@@ -220,58 +224,79 @@ pub fn process_diff_flags(ns: &mut Namespace, diff_config: &mut NotebookDiffConf
 }
 
 /// The base, remote and paths of an `nbdiff` command line: a revision or file, and the paths
-/// that filter revision diffs.
-pub type DiffArgs = (Option<String>, Option<String>, Option<Vec<String>>);
+/// that filter revision diffs. The paths are whatever the namespace held (a string or a list,
+/// but a configuration file can put anything there).
+pub type DiffArgs = (Option<String>, Option<String>, Option<Value>);
 
 /// `resolve_diff_args`: whether the positionals are revisions or files and paths.
 pub fn resolve_diff_args(ns: &Namespace) -> Result<DiffArgs> {
-    let text = |name: &str| ns.str(name).map(str::to_owned);
-    let mut base = text("base");
-    let mut remote = text("remote");
-    let mut paths: Option<Vec<String>> = match ns.get("paths") {
-        Some(Value::List(items)) if !items.is_empty() => Some(
-            items
-                .iter()
-                .map(|v| {
-                    v.as_str()
-                        .map(str::to_owned)
-                        .ok_or_else(|| anyhow!("bad path"))
-                })
-                .collect::<Result<_>>()?,
-        ),
-        _ => None,
+    let text = |name: &str| -> Result<Option<String>> {
+        match ns.get(name) {
+            None | Some(Value::Null) => Ok(None),
+            Some(Value::Str(s)) => Ok(Some(s.clone())),
+            Some(other) => bail!("{name} must be a file name or revision, not {other:?}"),
+        }
     };
+    let mut base = text("base")?;
+    let mut remote = text("remote")?;
+    let mut paths: Option<Value> = ns.get("paths").filter(|v| v.truthy()).cloned();
     let gitref = |s: &Option<String>| is_gitref(s.as_deref());
     let truthy = |s: &Option<String>| s.as_deref().is_some_and(|s| !s.is_empty());
+    let prepend = |first: Vec<String>, paths: Option<Value>| -> Result<Option<Value>> {
+        match paths {
+            Some(Value::List(rest)) => Ok(Some(Value::List(
+                first.into_iter().map(Value::from).chain(rest).collect(),
+            ))),
+            other => bail!("can only concatenate list (not {other:?}) to list"),
+        }
+    };
     if remote.is_none() && paths.is_none() {
         if !gitref(&base)? {
-            paths = base.take().map(|b| vec![b]);
+            paths = base.take().map(Value::from);
             base = Some("HEAD".to_owned());
         }
     } else if paths.is_none() {
         if gitref(&base)? && !gitref(&remote)? {
-            paths = remote.take().map(|r| vec![r]);
+            paths = remote.take().map(Value::from);
         }
     } else if truthy(&base) && truthy(&remote) {
         if !gitref(&base)? {
-            let mut all = vec![
+            let first = vec![
                 base.take().unwrap_or_default(),
                 remote.take().unwrap_or_default(),
             ];
-            all.extend(paths.take().unwrap_or_default());
-            paths = Some(all);
+            paths = prepend(first, paths.take())?;
         } else if !gitref(&remote)? {
-            let mut all = vec![remote.take().unwrap_or_default()];
-            all.extend(paths.take().unwrap_or_default());
-            paths = Some(all);
+            paths = prepend(vec![remote.take().unwrap_or_default()], paths.take())?;
         }
     }
     Ok((base, remote, paths))
 }
 
+/// The pathspecs of `changed_notebooks`: a single string or a list of strings.
+pub fn pathspecs(paths: Option<&Value>) -> Result<Option<Vec<String>>> {
+    match paths {
+        None => Ok(None),
+        Some(Value::Str(path)) => Ok(Some(vec![path.clone()])),
+        Some(Value::List(items)) => items
+            .iter()
+            .map(|item| match item {
+                Value::Str(path) => Ok(path.clone()),
+                other => bail!("path must be a string, not {other:?}"),
+            })
+            .collect::<Result<Vec<_>>>()
+            .map(Some),
+        Some(other) => bail!("paths must be a string or a list, not {other:?}"),
+    }
+}
+
 /// `prettyprint_config_from_args`.
 pub fn prettyprint_config(ns: &Namespace) -> PrettyPrintConfig {
     let flag = |name: &str| ns.get(name).is_none_or(Value::truthy);
+    // `col_const[use_color]` accepts what equals True or False.
+    let invalid_color = !ns.get("use_color").is_none_or(|v| {
+        matches!(v, Value::Bool(_)) || v.py_eq(&Value::Bool(true)) || v.py_eq(&Value::Bool(false))
+    });
     PrettyPrintConfig {
         sources: flag("sources"),
         outputs: flag("outputs"),
@@ -283,6 +308,7 @@ pub fn prettyprint_config(ns: &Namespace) -> PrettyPrintConfig {
         use_git: flag("use_git"),
         use_diff: flag("use_diff"),
         use_color: flag("use_color"),
+        invalid_color,
     }
 }
 
@@ -303,32 +329,72 @@ pub fn merge_args(ns: &Namespace) -> Result<MergeArgs> {
     })
 }
 
-/// What `--config` prints: the keys of the entry point's configuration and their values.
-pub fn config_listing(entrypoint: &str) -> Result<String> {
-    let name = config::configurable_name(entrypoint)
-        .ok_or_else(|| anyhow!("no configuration for {entrypoint:?}"))?;
-    let config = config::build_config(entrypoint, true).map_err(|e| anyhow!("{e:?}"))?;
-    let mut out = format!("{name}:\n");
-    let mut ns = Namespace {
-        values: config.clone(),
-        log_level: None,
-    };
-    let _ = process_exclusive_ignorables(&mut ns);
-    for (key, value) in &config {
+/// Why `--config` could not print.
+#[derive(Debug)]
+pub enum ListingError {
+    /// An `ArgumentError`, which `argparse` turns into a usage error.
+    Usage(String),
+    Other(anyhow::Error),
+}
+
+/// `modify_config_for_print`: the values of a configuration as the text `--config` shows.
+fn modify_config_for_print(config: &Map) -> Result<Map, ListingError> {
+    let mut output = Map::new();
+    let mut resolved: Option<Namespace> = None;
+    for (key, value) in config {
         let shown = match value {
-            Value::Null if DIFF_IGNORABLES.contains(&key.as_str()) => format!(
-                "<unset, resolves to {}>",
-                json::dumps(
-                    ns.get(key).unwrap_or(&Value::Null),
-                    &DumpOptions::python_default()
-                )
-            ),
-            Value::Object(map) if map.is_empty() => "{}".to_owned(),
-            other => json::dumps(other, &DumpOptions::python_default()),
+            Value::Object(sub) => {
+                let inner = modify_config_for_print(sub)?;
+                if inner.is_empty() {
+                    Value::from("{}")
+                } else {
+                    Value::Object(inner)
+                }
+            }
+            Value::Null if DIFF_IGNORABLES.contains(&key.as_str()) => {
+                if resolved.is_none() {
+                    let mut ns = Namespace::default();
+                    for name in DIFF_IGNORABLES {
+                        let value = config.get(name).cloned().unwrap_or(Value::Null);
+                        ns.values.insert(name.to_owned(), value);
+                    }
+                    process_exclusive_ignorables(&mut ns)
+                        .map_err(|e| ListingError::Usage(format!("{e:#}")))?;
+                    resolved = Some(ns);
+                }
+                let value = resolved
+                    .as_ref()
+                    .and_then(|ns| ns.get(key))
+                    .unwrap_or(&Value::Null);
+                Value::from(format!(
+                    "<unset, resolves to {}>",
+                    json::dumps(value, &DumpOptions::python_default())
+                ))
+            }
+            other => Value::from(json::dumps(other, &DumpOptions::python_default())),
         };
-        out.push_str(&format!("  {key}: {shown}\n"));
+        output.insert(key.clone(), shown);
     }
-    Ok(out)
+    Ok(output)
+}
+
+/// What `--config` prints for an entry point: its configuration class and the keys and effective
+/// values of its configuration.
+pub fn config_listing(ctx: &Context, entrypoint: &str) -> Result<String, ListingError> {
+    let name = config::configurable_name(entrypoint)
+        .ok_or_else(|| ListingError::Other(anyhow!("no configuration for {entrypoint:?}")))?;
+    let config = config::build_config(ctx, entrypoint, true)
+        .map_err(|e| ListingError::Other(anyhow!("{e:?}")))?;
+    let mut section = Map::new();
+    section.insert(
+        name.to_owned(),
+        Value::Object(modify_config_for_print(&config)?),
+    );
+    let mut text = String::new();
+    Printer::new(&PrettyPrintConfig::default(), &mut text)
+        .dict(&section, &[], "")
+        .map_err(|e| ListingError::Other(e.into()))?;
+    Ok(text)
 }
 
 /// Maps a parser result onto what the program does: usage errors exit with status 2.
@@ -343,6 +409,7 @@ pub enum Parsed {
 }
 
 pub fn parse_command_line(
+    ctx: &Context,
     parser: &Parser,
     args: &[String],
     version: &str,
@@ -365,13 +432,18 @@ pub fn parse_command_line(
             stderr: String::new(),
             code: 0,
         },
-        Err(ParseError::Exit(ExitRequest::ConfigHelp)) => match config_listing(entrypoint) {
+        Err(ParseError::Exit(ExitRequest::ConfigHelp)) => match config_listing(ctx, entrypoint) {
             Ok(listing) => Parsed::Exit {
                 stdout: String::new(),
                 stderr: listing,
                 code: 1,
             },
-            Err(error) => Parsed::Exit {
+            Err(ListingError::Usage(message)) => Parsed::Exit {
+                stdout: String::new(),
+                stderr: parser.error_text(&message),
+                code: 2,
+            },
+            Err(ListingError::Other(error)) => Parsed::Exit {
                 stdout: String::new(),
                 stderr: format!("{error:#}\n"),
                 code: 1,

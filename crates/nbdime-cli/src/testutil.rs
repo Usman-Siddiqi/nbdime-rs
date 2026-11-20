@@ -1,10 +1,11 @@
 //! Helpers for the unit tests of the commands.
 
+use crate::config::Context;
 use std::fs;
 use std::path::PathBuf;
 
 /// A directory removed on drop.
-pub struct TempDir(PathBuf);
+pub struct TempDir(pub PathBuf);
 
 impl TempDir {
     pub fn new(name: &str) -> Self {
@@ -49,12 +50,17 @@ pub fn notebook(sources: &[&str]) -> String {
     )
 }
 
-type App = fn(&str, &[String], &mut dyn std::io::Write) -> anyhow::Result<i32>;
+type App = fn(&Context, &str, &[String], &mut dyn std::io::Write) -> anyhow::Result<i32>;
+
+/// A context without configuration files, for commands under test.
+pub fn isolated() -> Context {
+    Context::without_config(std::path::Path::new("/nonexistent-nbdime-rs-test"))
+}
 
 /// Runs a command and returns its exit status and what it wrote to stdout.
 pub fn run_app(app: App, prog: &str, args: &[&str]) -> (i32, String) {
     let args: Vec<String> = args.iter().map(|s| (*s).to_owned()).collect();
     let mut out = Vec::new();
-    let code = app(prog, &args, &mut out).unwrap();
+    let code = app(&isolated(), prog, &args, &mut out).unwrap();
     (code, String::from_utf8(out).unwrap())
 }

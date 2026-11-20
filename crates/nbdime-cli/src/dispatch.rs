@@ -1,12 +1,13 @@
 //! The `nbdime` command, which dispatches to the other commands (`nbdime.__main__`).
 
 use std::io::Write;
-use std::process::Command;
+use std::process::{Command, ExitStatus};
 
-use anyhow::Result;
+use anyhow::{bail, Context as _, Result};
 
-use crate::args::config_listing;
-use crate::{nbdiffapp, nbmergeapp, VERSION};
+use crate::args::{config_listing, ListingError};
+use crate::config::{Context, ENTRYPOINTS};
+use crate::{nbdiffapp, nbmergeapp, osstr, VERSION};
 
 const COMMANDS: [&str; 8] = [
     "show",
@@ -33,30 +34,40 @@ fn help_message() -> String {
 
 /// `sys.exit(message)`: the message on stderr and status 1.
 fn exit_with(message: &str) -> Result<i32> {
-    eprintln!("{message}");
+    osstr::eprint(&format!("{message}\n"));
     Ok(1)
 }
 
 /// Runs `nbdime` with the arguments `args` (without the program name).
 pub fn main(prog: &str, args: &[String], out: &mut dyn Write) -> Result<i32> {
+    run(&Context::process(), prog, args, out)
+}
+
+/// [`main`] in the process `ctx` describes.
+pub fn run(ctx: &Context, prog: &str, args: &[String], out: &mut dyn Write) -> Result<i32> {
     let Some((command, rest)) = args.split_first() else {
         return exit_with(&format!("Option missing.\n\n{}", help_message()));
     };
     match command.as_str() {
-        "diff" => nbdiffapp::main(prog, rest, out),
-        "merge" => nbmergeapp::main(prog, rest, out),
+        "diff" => nbdiffapp::run(ctx, prog, rest, out),
+        "merge" => nbmergeapp::run(ctx, prog, rest, out),
         "mergetool" => mergetool(rest),
+        "extensions" => extensions(rest),
+        "reg-extensions" => toggle_extensions(true, rest).map(|()| 0),
         "--version" => exit_with(VERSION),
         "-h" | "--help" => exit_with(&help_message()),
         "--config" => {
-            eprintln!("All available config options, and their current values:\n");
-            for entrypoint in ["nbdiff", "nbmerge"] {
-                eprintln!("{}", config_listing(entrypoint)?);
+            osstr::eprint("All available config options, and their current values:\n\n");
+            for entrypoint in ENTRYPOINTS {
+                let listing = config_listing(ctx, entrypoint).map_err(|e| match e {
+                    ListingError::Usage(message) => anyhow::anyhow!(message),
+                    ListingError::Other(error) => error,
+                })?;
+                osstr::eprint(&format!("{listing}\n"));
             }
             Ok(1)
         }
-        "show" | "diff-web" | "merge-web" | "server" | "config-git" | "reg-extensions"
-        | "extensions" => exit_with(&format!(
+        "show" | "diff-web" | "merge-web" | "server" | "config-git" => exit_with(&format!(
             "nbdime-rs does not provide the '{command}' command yet."
         )),
         other => exit_with(&format!(
@@ -64,6 +75,16 @@ pub fn main(prog: &str, args: &[String], out: &mut dyn Write) -> Result<i32> {
             help_message()
         )),
     }
+}
+
+/// The status `sys.exit(returncode)` gives: a process killed by signal `n` is `-n` for Python,
+/// which the shell sees as `256 - n`.
+fn exit_status(status: ExitStatus) -> i32 {
+    #[cfg(unix)]
+    if let Some(signal) = std::os::unix::process::ExitStatusExt::signal(&status) {
+        return (-signal) & 0xFF;
+    }
+    status.code().unwrap_or(1)
 }
 
 fn mergetool(args: &[String]) -> Result<i32> {
@@ -74,15 +95,64 @@ fn mergetool(args: &[String]) -> Result<i32> {
     } else {
         let paths: Vec<&String> = args.iter().filter(|a| a.ends_with(".ipynb")).collect();
         if paths.len() != args.len() {
-            let skipped: Vec<&String> = args.iter().filter(|a| !a.ends_with(".ipynb")).collect();
-            eprintln!("Skipping given filenames without .ipynb extension: {skipped:?}");
+            let skipped: Vec<String> = args
+                .iter()
+                .filter(|a| !a.ends_with(".ipynb"))
+                .map(|a| osstr::repr(a))
+                .collect();
+            osstr::eprint(&format!(
+                "Skipping given filenames without .ipynb extension: [{}]\n",
+                skipped.join(", ")
+            ));
         }
-        command.args(paths);
+        command.args(paths.into_iter().map(|p| osstr::to_os(p)));
     }
     match command.status() {
-        Ok(status) => Ok(status.code().unwrap_or(1)),
+        Ok(status) => Ok(exit_status(status)),
         Err(_) => exit_with("Cannot use \"nbdime mergetool\" alias as git is not preset on path"),
     }
+}
+
+/// `nbdime extensions (--enable | --disable)`.
+fn extensions(args: &[String]) -> Result<i32> {
+    let Some((subcommand, rest)) = args.split_first() else {
+        bail!("pop from empty list");
+    };
+    match subcommand.as_str() {
+        "--enable" => toggle_extensions(true, rest).map(|()| 0),
+        "--disable" => toggle_extensions(false, rest).map(|()| 0),
+        other => exit_with(&format!(
+            "Unknown command: use either \"--enable\" or \"--disable\" with \"nbdime extensions\", not {}",
+            osstr::repr(other)
+        )),
+    }
+}
+
+/// `toggle_extensions`: runs the `jupyter` commands and ignores how they end.
+fn toggle_extensions(enable: bool, args: &[String]) -> Result<()> {
+    let commands: [&str; 4] = if enable {
+        [
+            "serverextension enable --py nbdime",
+            "nbextension install --py nbdime",
+            "nbextension enable --py nbdime",
+            "labextension install nbdime-jupyterlab",
+        ]
+    } else {
+        [
+            "serverextension disable --py nbdime",
+            "nbextension disable --py nbdime",
+            "nbextension uninstall --py nbdime",
+            "labextension uninstall nbdime-jupyterlab",
+        ]
+    };
+    for command in commands {
+        Command::new("jupyter")
+            .args(command.split(' '))
+            .args(args.iter().map(|a| osstr::to_os(a)))
+            .status()
+            .context("running jupyter")?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -102,9 +172,15 @@ mod tests {
     #[test]
     fn dispatch_without_arguments_fails() {
         let mut out = Vec::new();
-        assert_eq!(main("nbdime", &[], &mut out).unwrap(), 1);
+        assert_eq!(
+            run(&crate::testutil::isolated(), "nbdime", &[], &mut out).unwrap(),
+            1
+        );
         let unknown = vec!["bogus".to_owned()];
-        assert_eq!(main("nbdime", &unknown, &mut out).unwrap(), 1);
+        assert_eq!(
+            run(&crate::testutil::isolated(), "nbdime", &unknown, &mut out).unwrap(),
+            1
+        );
         assert!(out.is_empty());
     }
 }

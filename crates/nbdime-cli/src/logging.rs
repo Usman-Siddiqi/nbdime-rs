@@ -1,8 +1,6 @@
 //! The `logging` setup of `nbdime.log.init_logging`: records go to stderr as
 //! `[W module:line] message`, filtered by the level `--log-level` sets.
 
-use std::io::Write;
-
 use nbdime_core::log::{Level, Record};
 
 pub struct Logger {
@@ -40,9 +38,7 @@ impl Logger {
 
     pub fn log(&self, level: Level, module: &str, line: u32, message: &str) {
         if self.enabled(level) {
-            let _ = std::io::stderr()
-                .lock()
-                .write_all(Self::format(level, module, line, message).as_bytes());
+            crate::osstr::eprint(&Self::format(level, module, line, message));
         }
     }
 

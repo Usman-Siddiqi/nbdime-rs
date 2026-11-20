@@ -3,3 +3,4 @@
 test_json_io.py
 test_pilot_generic_diff.py
 test_u05_patch.py
+test_u02_nbformat.py

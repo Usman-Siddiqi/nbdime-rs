@@ -342,3 +342,16 @@ def test_u02_roundtrip(engine):
     for (ok, nb), (_, text) in zip(back, written):
         assert ok, nb
         assert canon(nb) == canon(o_reads(text))
+
+
+def test_u02_written_ids_do_not_depend_on_spelling(engine):
+    """F-003 on write: a repaired id depends on the cell as it reads back, not on how it was given."""
+    variants = [{"cell_type": "raw", "metadata": {}, "source": "s\nt"},
+                {"cell_type": "raw", "metadata": {}, "source": ["s\n", "t"]},
+                {"cell_type": "raw", "metadata": {"trusted": True}, "source": "s\nt"}]
+    nbs = [{"cells": [c], "metadata": {}, "nbformat": 4, "nbformat_minor": 5} for c in variants]
+    written = engine.call_many("nbformat.writes", [{"nb": nb} for nb in nbs])
+    assert all(ok for ok, _ in written), written
+    assert len({t for _, t in written}) == 1
+    (ok, back), = engine.call_many("nbformat.reads", [{"text": written[0][1]}])
+    assert ok and back["cells"][0]["id"] == json.loads(written[0][1])["cells"][0]["id"]

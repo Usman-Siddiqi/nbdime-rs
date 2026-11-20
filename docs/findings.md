@@ -71,6 +71,37 @@ anything requires explicit approval from the project owner (see CLAUDE.md).
   `diff_single_outputs` with shallow copies; the neutrality test shows the results are equal
   with keys sorted. Candidate for an upstream report (ask the owner first).
 
+### F-016: `identifier=False` does not ignore cell ids
+- **What**: `set_notebook_diff_targets(identifier=False)` sets the differ of `/cells/*/id` to
+  `diff_ignore`, but `/cells/*/id` is also in `atomic_paths`, so `diff_dicts` replaces atomic
+  values without consulting the differ. A changed cell id is therefore always reported.
+- **Evidence** (nbdime 4.0.4): two notebooks that differ only in `cells[0].id` give
+  `[patch cells [patch 0 [replace id]]]` with default targets, with `identifier=False` and with
+  `set_notebook_diff_ignores({"/cells/*/id": True})`.
+- **Decision**: replicated (parity), since the flag is observable through `nbdiff`. Candidate for
+  an upstream report (ask the owner first).
+
+### F-017: shapes that are not nbformat-shaped
+- **What**: the notebook predicates are duck-typed upstream: a cell `source` that is a list or
+  dict, a stream `text` that is a list in one output and a string in the other, a `traceback`
+  that is a string, or `outputs` that is a non-list truthy value sometimes yield results
+  (`compare_text_strict` joins lists; `compare_strings_approximate` iterates any sequence) and
+  sometimes raise (`compare_text_approximate` is `lru_cache`d, so list and dict arguments raise
+  `TypeError` before the body runs). nbformat's reader never produces such shapes.
+- **Decision**: nbdime-rs supports the shapes nbformat produces (strings where nbformat joins
+  lines, lists of strings for tracebacks) with upstream's results, and returns an error for the
+  other shapes, including where upstream happens to return a value. Missing keys and the
+  predicates that raise upstream raise here too. One further difference: the brute-force LCS
+  strips a common suffix of aligned items before evaluating the predicate grid (see
+  `docs/upstream-performance.md`), so a malformed cell that only sits in the stripped part never
+  reaches a predicate and does not raise, where upstream evaluates every pair. Neither affects
+  valid notebooks. Found by a differential run of 7,500 predicate and 1,500 notebook cases built
+  from deliberately malformed cells and outputs: no case produced a different result, only
+  these error/no-error differences.
+- **Parity suite note**: `PARITY_SEED=1`, `3` and `4` make `parity/gen_nb.py:mutate_cell` raise
+  `IndexError` (`rng.choice(sorted(cell["attachments"]))` on an emptied attachments dict), so
+  those seeds cannot be run; seeds 0, 2 and 5 pass at scale 2.
+
 ## Nondeterminism in upstream
 
 ### F-003: random cell ids on read (nbformat >= 4.5)

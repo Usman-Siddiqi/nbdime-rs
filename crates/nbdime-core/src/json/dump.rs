@@ -37,6 +37,18 @@ impl DumpOptions {
         }
     }
 
+    /// `json.dumps(nb, indent=1, sort_keys=True, separators=(",", ": "), ensure_ascii=False)`,
+    /// as `nbformat` writes notebooks.
+    pub fn nbformat_write() -> Self {
+        DumpOptions {
+            indent: Some(1),
+            item_separator: ",".into(),
+            ensure_ascii: false,
+            sort_keys: true,
+            ..Self::python_default()
+        }
+    }
+
     /// `json.dump(d, f, indent=2, separators=(",", ": "))`, as `nbdiff --out` writes diffs.
     pub fn nbdime_diff_file() -> Self {
         DumpOptions {

@@ -13,7 +13,7 @@ Read the upstream files yourself. Porting guide: sections 2, 8, 10, 11.
 
 ```rust
 pub fn patch(obj: &Value, diff: &[DiffEntry]) -> Result<Value, PatchError>;
-pub fn flatten_list_of_string_diff(a: &StrOrLines, diff: &[DiffEntry]) -> Result<Diff, PatchError>;
+pub fn flatten_list_of_string_diff(a: StrOrLines, diff: &[DiffEntry]) -> Result<Diff, DiffFormatError>;
 ```
 
 ## Semantics to get exactly right
@@ -32,11 +32,12 @@ pub fn flatten_list_of_string_diff(a: &StrOrLines, diff: &[DiffEntry]) -> Result
   `RuntimeError` on inconsistent removerange is an error; `_combine_ops` turns `add` into
   `addrange`, and a string `valuelist` grows by string concatenation; the final stable sort by
   key.
-- Diffs come in as JSON (`diff_format::diff_from_value`). Missing fields, unknown ops and wrong
-  types are errors, as they are upstream (`AttributeError`/`KeyError`/`NBDiffFormatError`).
-- **F-015 (deliberate deviation, new)**: list keys must be non-negative integers. Upstream also
-  accepts `true`/`false` (Python bools are ints) and negative integers (Python slicing from the
-  end); no differ produces these, and they are rejected with an error.
+- Diffs come in as JSON (`diff_format::diff_from_value`). For `patch`, missing fields, unknown ops
+  and wrong types are errors, as they are upstream (`AttributeError`/`KeyError`/
+  `NBDiffFormatError`); `flatten_list_of_string_diff` is stricter (see F-015).
+- **F-015 (deliberate deviation, new)**: list keys and `removerange` lengths must be non-negative
+  integers in `i64` range; booleans, negatives, floats and larger integers are rejected, and
+  merged lengths beyond `u64` are an error. See F-015 in `docs/findings.md`.
 
 ## Performance
 

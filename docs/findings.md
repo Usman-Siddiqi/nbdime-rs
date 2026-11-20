@@ -102,6 +102,18 @@ anything requires explicit approval from the project owner (see CLAUDE.md).
   `IndexError` (`rng.choice(sorted(cell["attachments"]))` on an emptied attachments dict), so
   those seeds cannot be run; seeds 0, 2 and 5 pass at scale 2.
 
+### F-019: `nbdiff a.ipynb a.ipynb` crashes on a JSON-scalar mime value
+- **What**: `add_mime_diff` sends every `application/json` (and `*+json`, `text/*`, ...) value to
+  the generic `diff`, which raises `RuntimeError: Can currently only diff list, dict, or str
+  objects.` for numbers, bools and null, even when the two values are equal. The notebook schema
+  allows any JSON value for JSON mime types, so a valid notebook (an output or attachment with
+  `"application/json": 1`) cannot be diffed, not even against itself. Values of different kinds
+  (`"a"` vs `["a"]`) raise the same way. Found by the U04 hostile review.
+- **Decision**: deviation. Values the generic diff cannot recurse into are replaced when they
+  differ (`!=`), which is what `add_mime_diff` does for non-split mime types. The parity oracle
+  applies the same fix; `test_u04_f019_fix_is_neutral` shows it changes nothing where upstream
+  does not raise. Candidate for an upstream report (ask the owner first).
+
 ## Nondeterminism in upstream
 
 ### F-003: random cell ids on read (nbformat >= 4.5)
@@ -174,16 +186,46 @@ anything requires explicit approval from the project owner (see CLAUDE.md).
   upgrades). v3 was superseded in 2015; the converters are large and rarely exercised. A missing
   `nbformat` key (upstream: v1) and non-integer versions (`4.0`; upstream: `AssertionError`) are
   errors too. Resolves Q-003. Can be revisited in Phase 4 if users ask.
+- The error message depends on the version: 1 to 3 suggest the conversion above, 5 and above say
+  the notebook is newer than supported, anything else says `"nbformat"` must be the integer 4.
 
 ### F-013: no schema validation messages
 - `nbformat.read` validates against the JSON schema and logs "Notebook JSON is invalid" to
   stderr, then carries on. nbdime-rs does not validate against the schema (only the id repair
   part of validation has an effect on the data), so it prints nothing. stdout is unaffected.
+- One schema failure is not survivable upstream: when the first schema error is a `oneOf` failure
+  on a cell whose `cell_type` is not a string (nbformat minor <= 5), `better_validation_error`
+  computes `cell_type + "_cell"` and raises `TypeError` out of `nbformat.reads`/`writes`. Whether
+  it fires depends on which schema error comes first, so nbdime-rs does not try to reproduce it
+  and accepts such (garbage) notebooks, as it does for every other schema violation. In a fuzz
+  run over about 30,000 notebooks with random scalar values in every field this was the only
+  difference found besides the documented deviations (F-003, F-012, Q-002).
 
-### F-015: diff keys in patch input
-- Upstream's `patch_list` accepts `true`/`false` as list keys (Python bools are ints) and
-  negative integers (slicing from the end). No differ produces them; nbdime-rs rejects them with
-  an error rather than reproducing slicing-from-the-end behavior for hand-edited diffs.
+### F-018: deep nesting in notebooks
+- Upstream fails with `RecursionError` at about 1,000 levels of nesting in `nbformat.reads`
+  (`from_dict`) and at about 500 levels in `nbformat.writes` (`copy.deepcopy`). nbdime-rs reads
+  and writes anything the JSON parser accepts, up to 9,998 levels (F-009 covers the diff).
+- **Decision**: accept (deliberate), as with F-009. `Value`'s derived `Clone`, its drop glue and some
+  operations recurse, so library callers on small stacks (the default 2 MB for a spawned thread)
+  can overflow on values nested several thousand levels deep. The CLI and the Python bindings
+  run the engine on a large-stack worker thread. `writes` clones the whole notebook once, as the
+  spec allows; cloning only the levels that change is not possible without sharing, which
+  `Value` does not do.
+
+### F-015: diff keys and lengths in patch and flatten input
+Deliberate deviations; no differ produces any of these, and each is an error here.
+- List keys and `removerange` lengths must be non-negative integers that fit `i64`. Upstream also
+  accepts `true`/`false` (Python bools are ints; as a length they count as 1/0), negative
+  integers (slicing from the end; a negative `removerange` length duplicates items), floats
+  (some work through int/float arithmetic) and integers above `i64::MAX` (slices clamp).
+- Merged `removerange` lengths in `flatten_list_of_string_diff` must fit `u64`. Upstream's exact
+  integer can be larger (three lengths of `i64::MAX` give 27670116110564327421); an end beyond
+  `u64` is an error, as upstream's is, since it can never equal the next key.
+- `flatten_list_of_string_diff` parses its diff eagerly, so unknown ops, odd keys or non-list
+  inner diffs that upstream would copy through untouched are errors. For `patch` and
+  `patch_*`, missing fields, unknown ops and wrong types are errors, as upstream.
+- `patch` rejects a non-list empty iterable (`{}` or `""`) as a diff; upstream accepts it.
+- The dev tool's `flatten_list_of_string_diff` requires every line of `a` to be a string.
 
 ## Open questions
 

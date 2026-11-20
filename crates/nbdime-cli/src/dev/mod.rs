@@ -4,12 +4,15 @@
 //! compares with what upstream nbdime returns for the same call.
 
 use anyhow::{anyhow, bail, Context, Result};
-use nbdime_core::diff_format::diff_to_value;
+use nbdime_core::diff_format::{diff_from_value, diff_to_value};
+use nbdime_core::diff_utils::{flatten_list_of_string_diff, StrOrLines};
 use nbdime_core::diffing::{
     self, snakes::compute_snakes_multilevel, NotebookDiffConfig, Predicate, Targets,
 };
 use nbdime_core::difflib::SequenceMatcher;
 use nbdime_core::json::{self, DumpOptions};
+use nbdime_core::nbformat;
+use nbdime_core::patch::patch;
 use nbdime_core::{Int, Value};
 
 /// Stack size for threads that run the core on untrusted input.
@@ -49,6 +52,13 @@ pub fn dispatch(name: &str, args: &Value) -> Result<Value> {
                 |x, y| x.py_eq(y),
             )))
         }
+        "patch" => {
+            let diff = diff_from_value(arg(args, "diff")?)?;
+            Ok(patch(arg(args, "obj")?, &diff)?)
+        }
+        "flatten_list_of_string_diff" => flatten(args),
+        "nbformat.reads" => Ok(nbformat::reads(str_arg(args, "text")?)?),
+        "nbformat.writes" => Ok(Value::from(nbformat::writes(arg(args, "nb")?)?)),
         "diff" => {
             let diff = diffing::diff(arg(args, "a")?, arg(args, "b")?)?;
             Ok(diff_to_value(&diff))
@@ -188,6 +198,22 @@ fn snakes_multilevel_lines(args: &Value) -> Result<Value> {
             .map(|s| Value::List(vec![Value::from(s.i), Value::from(s.j), Value::from(s.n)]))
             .collect(),
     ))
+}
+
+fn flatten(args: &Value) -> Result<Value> {
+    let diff = diff_from_value(arg(args, "diff")?)?;
+    let flat = match arg(args, "a")? {
+        Value::Str(s) => flatten_list_of_string_diff(StrOrLines::Str(s), &diff)?,
+        Value::List(items) => {
+            let lines: Vec<&str> = items
+                .iter()
+                .map(|v| v.as_str().context("lines must be strings"))
+                .collect::<Result<_>>()?;
+            flatten_list_of_string_diff(StrOrLines::Lines(&lines), &diff)?
+        }
+        _ => bail!("argument \"a\" must be a string or a list of strings"),
+    };
+    Ok(diff_to_value(&flat))
 }
 
 fn list_arg<'a>(args: &'a Value, name: &str) -> Result<&'a [Value]> {

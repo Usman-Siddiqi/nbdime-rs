@@ -930,7 +930,7 @@ mod tests {
             compare(ignoring(&[0], Differ::SequenceMultilevel)),
             Ok(false)
         );
-        // `True == 1`, and every wrapper must list the key for the entry to disappear.
+        // `True == 1`, and listing the key in any one wrapper is enough to drop the entry.
         let by_bool = Differ::IgnoreKeys {
             inner: Box::new(Differ::SequenceMultilevel),
             keys: vec![Value::Bool(true)],

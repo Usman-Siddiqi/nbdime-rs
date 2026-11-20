@@ -25,6 +25,7 @@ parity/data/upstream_merge_calls.jsonl by parity/tools/record_upstream_merge_cal
 upstream test notebook families, and seeded random JSON and notebook triples.
 """
 
+import contextlib
 import copy
 import json
 import logging
@@ -37,6 +38,7 @@ import nbformat
 from nbdime.merging import decisions as nb_decisions
 from nbdime.merging import generic as nb_generic
 from nbdime.merging import notebooks as nb_merge
+from nbdime.merging import strategies as nb_strategies
 from nbdime.diffing import notebooks as nbm
 from nbdime.diff_utils import to_diffentry_dicts
 from nbdime.utils import Strategies
@@ -76,22 +78,55 @@ def _decisions_in(decisions):
     return out
 
 
-def o_decide_merge(base, local, remote, strategies=None, transients=None, fall_back=None):
+def _resolve_strategy_inline_outputs_fixed(base_path, outputs, decisions):
+    """Upstream's resolver, except that a conflict appended at the end of a non-empty outputs
+    list has no base output (upstream indexes `outputs[len(outputs)]`, F-027)."""
+    S = nb_strategies
+    decisions_by_index = S.bundle_decisions_by_index(base_path, decisions)
+    decisions.decisions = []
+    for key, decs in sorted(decisions_by_index.items()):
+        if not any(d.conflict for d in decs):
+            decisions.decisions.extend(decs)
+        else:
+            local_diff, remote_diff = S.collect_diffs(base_path, decs)
+            base_output = outputs[key] if outputs and key < len(outputs) else None
+            inlined_conflict, keep_base = S.make_inline_output_conflict(base_output, local_diff, remote_diff)
+            custom_diff = [S.op_addrange(key, inlined_conflict)]
+            if not keep_base:
+                custom_diff += [S.op_removerange(key, 1)]
+            decisions.custom(base_path, local_diff, remote_diff, custom_diff, conflict=True,
+                             strategy="inline-outputs")
+
+
+@contextlib.contextmanager
+def merge_upstream(fix_f027=True):
+    """The fixed upstream of the notebook diff suite, plus F-027."""
     with upstream():
+        original = nb_strategies.resolve_strategy_inline_outputs
+        if fix_f027:
+            nb_strategies.resolve_strategy_inline_outputs = _resolve_strategy_inline_outputs_fixed
+        try:
+            yield
+        finally:
+            nb_strategies.resolve_strategy_inline_outputs = original
+
+
+def o_decide_merge(base, local, remote, strategies=None, transients=None, fall_back=None, fix_f027=True):
+    with merge_upstream(fix_f027):
         return _plain(nb_generic.decide_merge(_node(base), _node(local), _node(remote),
                                               _strategies(strategies, transients, fall_back)))
 
 
 def o_decide_merge_with_diff(base, local, remote, local_diff, remote_diff, strategies=None,
-                             transients=None, fall_back=None):
-    with upstream():
+                             transients=None, fall_back=None, fix_f027=True):
+    with merge_upstream(fix_f027):
         return _plain(nb_generic.decide_merge_with_diff(
             _node(base), _node(local), _node(remote), to_diffentry_dicts(local_diff),
             to_diffentry_dicts(remote_diff), _strategies(strategies, transients, fall_back)))
 
 
-def o_apply_decisions(base, decisions):
-    with upstream():
+def o_apply_decisions(base, decisions, fix_f027=True):
+    with merge_upstream(fix_f027):
         return _plain(nb_decisions.apply_decisions(_node(base), _decisions_in(decisions)))
 
 
@@ -101,8 +136,8 @@ def _ns(args):
     return SimpleNamespace(log_level="INFO", **dict(ARG_DEFAULTS, **args))
 
 
-def o_decide_notebook_merge(base, local, remote, args=None, ignores=None, targets=None):
-    with upstream():
+def o_decide_notebook_merge(base, local, remote, args=None, ignores=None, targets=None, fix_f027=True):
+    with merge_upstream(fix_f027):
         if ignores is not None:
             nbm.set_notebook_diff_ignores(ignores)
         if targets is not None:
@@ -110,8 +145,8 @@ def o_decide_notebook_merge(base, local, remote, args=None, ignores=None, target
         return _plain(nb_merge.decide_notebook_merge(_node(base), _node(local), _node(remote), _ns(args)))
 
 
-def o_merge_notebooks(base, local, remote, args=None, ignores=None, targets=None):
-    with upstream():
+def o_merge_notebooks(base, local, remote, args=None, ignores=None, targets=None, fix_f027=True):
+    with merge_upstream(fix_f027):
         if ignores is not None:
             nbm.set_notebook_diff_ignores(ignores)
         if targets is not None:
@@ -378,3 +413,50 @@ def test_u10_marker_ids_are_distinct(engine):
         assert len(ids) == len(set(ids)), ids
         seen_markers += len(_marker_ids(got[0], []))
     assert seen_markers > 0
+
+
+def _outputs_nb(outputs):
+    return {"cells": [{"cell_type": "code", "execution_count": 1, "id": "c1", "metadata": {},
+                       "outputs": outputs, "source": "x = 1\n"}],
+            "metadata": {}, "nbformat": 4, "nbformat_minor": 5}
+
+
+def _stream(text):
+    return {"name": "stdout", "output_type": "stream", "text": text}
+
+
+def test_u10_f027_appended_output_conflicts(engine):
+    """F-027: both sides append different outputs to a non-empty outputs list (default nbmerge)."""
+    base = [_stream("a\n")]
+    cases = []
+    for args in (None, {}, {"output_strategy": "inline-outputs"}, {"merge_strategy": "inline"}):
+        for extra_l, extra_r in ((["L\n"], ["R\n"]), (["L\n", "M\n"], ["R\n"]), (["L\n"], []), (["x\n"], ["x\n"])):
+            c = {"base": _outputs_nb(base), "local": _outputs_nb(base + [_stream(t) for t in extra_l]),
+                 "remote": _outputs_nb(base + [_stream(t) for t in extra_r])}
+            if args is not None:
+                c["args"] = args
+            cases.append(c)
+    check_parity(engine, "merge_notebooks", cases, o_merge_notebooks, min_cases=len(cases),
+                 compare=compare_modulo_marker_ids)
+    check_parity(engine, "decide_notebook_merge", cases, o_decide_notebook_merge, min_cases=len(cases),
+                 compare=compare_modulo_marker_ids)
+
+
+def test_u10_f027_fix_is_neutral():
+    """The F-027 oracle fix changes nothing where upstream does not raise, and it is exercised."""
+    cases = family_triples() + notebook_cases("u10-f027", 400)
+    base = [_stream("a\n")]
+    cases.append({"base": _outputs_nb(base), "local": _outputs_nb(base + [_stream("L\n")]),
+                  "remote": _outputs_nb(base + [_stream("R\n")])})
+    fixed_only = 0
+    for c in cases:
+        try:
+            unfixed = o_merge_notebooks(**c, fix_f027=False)
+        except IndexError:
+            o_merge_notebooks(**c)
+            fixed_only += 1
+            continue
+        except Exception:
+            continue
+        assert compare_modulo_marker_ids(unfixed, o_merge_notebooks(**c)), c
+    assert fixed_only >= 1

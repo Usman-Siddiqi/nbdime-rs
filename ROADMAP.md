@@ -64,7 +64,7 @@ stop and ask.
 |---|---|
 | JSON I/O | byte-identical to Python `json` on all suites (100k floats, 5k docs, edge cases); deviations F-005 (lone surrogates rejected) |
 | Generic diff | identical to nbdime 4.0.4 on ~45k cases per run (also at 4x scale, seed 17); deviations F-001 (no spurious error), F-009 (depth limit), F-011 (approximate predicate scope) |
-| Notebook diff | not started |
-| Patch | not started |
+| Notebook diff | identical on the U04 suite (upstream families, ~10k random/flagged pairs, predicates); deviations F-003, F-014, F-016, F-017, F-019; F-020 replicated |
+| Patch | identical on the U05 suite (~20k cases); deviation F-015 |
 | Merge | not started |
 | CLI output | not started |

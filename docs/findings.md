@@ -191,6 +191,18 @@ anything requires explicit approval from the project owner (see CLAUDE.md).
   Phase 3 with a correct `clear-all` semantics if one can be defined. Candidate for an upstream
   report (ask the owner first).
 
+### F-027: default `nbmerge` crashes when both sides append different outputs
+- **What**: `resolve_strategy_inline_outputs` passes `outputs[key] if outputs else None` as the
+  base output; for a conflict at the end of a non-empty outputs list `key == len(outputs)`, so it
+  raises `IndexError: list index out of range`. This is the default `nbmerge` path (inline
+  strategy) and a realistic case: a cell with output `a`, re-run on both branches, local appends
+  `L`, remote appends `R`. With empty base outputs it works. Found by the U10 hostile review.
+- **Decision**: deviation. There is no base output at the end of the list, so `None` is passed,
+  as upstream already does for an empty list: the conflict is inlined with markers (only inserts,
+  so the base is kept). The parity oracle applies the same fix (`merge_upstream` in
+  `parity/test_u10_merge.py`); `test_u10_f027_fix_is_neutral` shows it changes nothing where
+  upstream does not raise. Candidate for an upstream report (ask the owner first).
+
 ## Deliberate deviations
 
 ### F-004: no `RuntimeError` from F-001 (see above).
@@ -294,6 +306,9 @@ Deliberate deviations; no differ produces any of these, and each is an error her
   git's C sources. It may use permissively licensed crates (e.g. `imara-diff`, Apache-2.0) and
   read `gix-merge` (MIT/Apache) as a reference, and uses the `git` binary only as a black-box
   oracle. Output formatting is written from scratch against git's observed output.
+- **2026-11-20**: the U16 hostile review found that the first implementation of `myers.rs`,
+  `compact.rs` and `merge.rs` (branch `unit/u16`, never pushed or merged) translates xdiff
+  function by function despite this rule. It is held back; the owner decides how to proceed.
 
 ## Open questions
 

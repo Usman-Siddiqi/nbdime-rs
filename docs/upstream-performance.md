@@ -104,6 +104,12 @@ transitive) and the LCS is generally not unique. So the speed-up has to come fro
    backtrack matches `A[0]` with `B[1]`. Any shortcut beyond suffix stripping needs a proof or a
    differential test campaign, and a note in `docs/findings.md`.
 4. **No process spawning, no interpreter start-up** in the CLI.
+5. **Deciding output alignment from the snakes** (U04): `compare_outputs_approximate` only needs
+   to know whether the output alignment adds or removes anything, so with the default outputs
+   differ (possibly wrapped in key filters) the engine reads the keys of the unaligned runs off
+   the snakes and never diffs the aligned pairs or copies the added outputs.
+6. **One ratio per string pair** (U04): the difflib ratio of a pair is remembered on the first
+   string, so the strict, approximate and moderate levels share one `SequenceMatcher` run.
 
 Further algorithmic options (e.g. band-limited DP when an id- or hash-anchored alignment exists)
 are Phase 4 work and must be validated against the oracle on large differential runs.

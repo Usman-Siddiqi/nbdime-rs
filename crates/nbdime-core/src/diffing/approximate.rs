@@ -1,6 +1,8 @@
 //! Approximate string comparison, used to align similar lines.
 
-use std::cell::OnceCell;
+use std::cell::{OnceCell, RefCell};
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::difflib::{
     quick_ratio, quick_ratio_sorted, real_quick_ratio, PositionIndex, SequenceMatcher,
@@ -12,12 +14,21 @@ use super::DiffError;
 
 const THRESHOLD: f64 = 0.7;
 
+/// Ratios remembered per string; later pairs are computed again when asked for again.
+const MAX_CACHED_RATIOS: usize = 2048;
+
+static NEXT_ID: AtomicU64 = AtomicU64::new(0);
+
 /// A string with the derived data that [`PreparedStr::is_similar`] needs, computed on first use
 /// and kept, so that comparing one string against many does the work once per string rather
-/// than once per pair.
+/// than once per pair. The ratio of each pair is kept as well: alignment asks about the same
+/// pair under several predicates and thresholds.
 pub(super) struct PreparedStr<'a> {
+    id: u64,
     text: &'a str,
     len: usize,
+    /// `SequenceMatcher(self, other).ratio()` by the `id` of `other`.
+    ratios: RefCell<HashMap<u64, f64>>,
     chars: OnceCell<Vec<char>>,
     sorted_chars: OnceCell<Vec<char>>,
     positions: OnceCell<PositionIndex<char>>,
@@ -26,8 +37,10 @@ pub(super) struct PreparedStr<'a> {
 impl<'a> PreparedStr<'a> {
     pub(super) fn new(text: &'a str) -> Self {
         PreparedStr {
+            id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
             text,
             len: py_len(text),
+            ratios: RefCell::new(HashMap::new()),
             chars: OnceCell::new(),
             sorted_chars: OnceCell::new(),
             positions: OnceCell::new(),
@@ -36,6 +49,15 @@ impl<'a> PreparedStr<'a> {
 
     pub(super) fn text(&self) -> &'a str {
         self.text
+    }
+
+    /// Length in code points.
+    pub(super) fn len(&self) -> usize {
+        self.len
+    }
+
+    pub(super) fn is_empty(&self) -> bool {
+        self.text.is_empty()
     }
 
     pub(super) fn chars(&self) -> &[char] {
@@ -78,7 +100,19 @@ impl<'a> PreparedStr<'a> {
         if quick_ratio_sorted(self.sorted_chars(), y.sorted_chars()) < threshold {
             return false;
         }
-        SequenceMatcher::with_index(self.chars(), y.chars(), y.positions()).ratio() > threshold
+        self.ratio(y) > threshold
+    }
+
+    fn ratio(&self, y: &PreparedStr) -> f64 {
+        if let Some(&ratio) = self.ratios.borrow().get(&y.id) {
+            return ratio;
+        }
+        let ratio = SequenceMatcher::with_index(self.chars(), y.chars(), y.positions()).ratio();
+        let mut ratios = self.ratios.borrow_mut();
+        if ratios.len() < MAX_CACHED_RATIOS {
+            ratios.insert(y.id, ratio);
+        }
+        ratio
     }
 }
 
@@ -100,15 +134,19 @@ pub fn compare_strings_approximate(
 /// The `strings_approximate` predicate as upstream applies it to two arbitrary values: the
 /// operands are strings or lists (compared item by item), and anything else is a `TypeError`
 /// there, so it is an error here.
-pub(super) fn compare_values_approximate(x: &Value, y: &Value) -> Result<bool, DiffError> {
+pub(super) fn compare_values_approximate(
+    x: &Value,
+    y: &Value,
+    maxlen: Option<usize>,
+) -> Result<bool, DiffError> {
     // Upstream tests `bool(x) != bool(y)` first, so operands that differ in truthiness never
     // reach the type error.
     if x.truthy() != y.truthy() {
         return Ok(false);
     }
     match (x, y) {
-        (Value::Str(x), Value::Str(y)) => Ok(compare_strings_approximate(x, y, THRESHOLD, None)),
-        (Value::List(x), Value::List(y)) => compare_lists_approximate(x, y),
+        (Value::Str(x), Value::Str(y)) => Ok(compare_strings_approximate(x, y, THRESHOLD, maxlen)),
+        (Value::List(x), Value::List(y)) => compare_lists_approximate(x, y, maxlen),
         _ => Err(DiffError::ApproximateOperands),
     }
 }
@@ -122,7 +160,11 @@ fn hashable_items(items: &[Value]) -> Result<Vec<Hashable<'_>>, DiffError> {
 
 /// `compare_strings_approximate` on two non-empty lists, the items taking the place of the
 /// characters. Items must be hashable, as upstream hashes them to count occurrences.
-fn compare_lists_approximate(x: &[Value], y: &[Value]) -> Result<bool, DiffError> {
+fn compare_lists_approximate(
+    x: &[Value],
+    y: &[Value],
+    maxlen: Option<usize>,
+) -> Result<bool, DiffError> {
     if x.len() == y.len() && x.iter().zip(y).all(|(p, q)| p.py_eq_item(q)) {
         return Ok(true);
     }
@@ -131,6 +173,9 @@ fn compare_lists_approximate(x: &[Value], y: &[Value]) -> Result<bool, DiffError
     }
     let (x, y) = (hashable_items(x)?, hashable_items(y)?);
     if quick_ratio(&x, &y) < THRESHOLD {
+        return Ok(false);
+    }
+    if maxlen.is_some_and(|maxlen| x.len() > maxlen && y.len() > maxlen) {
         return Ok(false);
     }
     Ok(SequenceMatcher::new(&x, &y).ratio() > THRESHOLD)
@@ -142,7 +187,7 @@ mod tests {
     use crate::json::parse;
 
     fn approx(x: &str, y: &str) -> Result<bool, DiffError> {
-        compare_values_approximate(&parse(x).unwrap(), &parse(y).unwrap())
+        compare_values_approximate(&parse(x).unwrap(), &parse(y).unwrap(), None)
     }
 
     #[test]
@@ -184,6 +229,33 @@ mod tests {
     }
 
     #[test]
+    fn a_pair_ratio_is_computed_once_and_serves_every_threshold() {
+        let x = PreparedStr::new("abcdefgh");
+        let y = PreparedStr::new("abcdefgx");
+        // ratio 14 / 16 = 0.875, asked at thresholds on both sides of it.
+        for _ in 0..2 {
+            assert!(x.is_similar(&y, 0.7, None));
+            assert!(!x.is_similar(&y, 0.95, None));
+            assert!(x.is_similar(&y, 0.875 - f64::EPSILON, None));
+            assert!(!x.is_similar(&y, 0.875, None));
+        }
+        assert_eq!(x.ratios.borrow().get(&y.id), Some(&0.875));
+        assert_eq!(x.ratios.borrow().len(), 1);
+    }
+
+    #[test]
+    fn ratios_are_remembered_for_a_bounded_number_of_partners() {
+        let x = PreparedStr::new("abcdefgh");
+        let partners: Vec<_> = (0..MAX_CACHED_RATIOS + 5)
+            .map(|_| PreparedStr::new("abcdefgx"))
+            .collect();
+        for y in &partners {
+            assert!(x.is_similar(y, 0.7, None));
+        }
+        assert_eq!(x.ratios.borrow().len(), MAX_CACHED_RATIOS);
+    }
+
+    #[test]
     fn lengths_count_code_points() {
         assert!(compare_strings_approximate(
             "\u{1F600}\u{1F600}\u{1F600}",
@@ -209,6 +281,17 @@ mod tests {
         // 1, 1.0 and true are one item, so the lists are equal.
         assert_eq!(approx("[1, 1.0, true]", "[true, 1, 1.0]"), Ok(true));
         assert_eq!(approx("[NaN, 1]", "[NaN, 1]"), Ok(true));
+    }
+
+    #[test]
+    fn maxlen_applies_to_lists_after_the_cheap_bounds() {
+        let (x, y) = (
+            parse(r#"["a","b","c","d"]"#).unwrap(),
+            parse(r#"["a","b","c","e"]"#).unwrap(),
+        );
+        assert_eq!(compare_values_approximate(&x, &y, Some(3)), Ok(false));
+        assert_eq!(compare_values_approximate(&x, &y, Some(4)), Ok(true));
+        assert_eq!(compare_values_approximate(&x, &x, Some(0)), Ok(true));
     }
 
     #[test]

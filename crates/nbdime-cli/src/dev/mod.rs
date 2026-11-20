@@ -6,7 +6,9 @@
 use anyhow::{anyhow, bail, Context, Result};
 use nbdime_core::diff_format::{diff_from_value, diff_to_value};
 use nbdime_core::diff_utils::{flatten_list_of_string_diff, StrOrLines};
-use nbdime_core::diffing::{self, snakes::compute_snakes_multilevel};
+use nbdime_core::diffing::{
+    self, snakes::compute_snakes_multilevel, NotebookDiffConfig, Predicate, Targets,
+};
 use nbdime_core::difflib::SequenceMatcher;
 use nbdime_core::json::{self, DumpOptions};
 use nbdime_core::nbformat;
@@ -61,8 +63,75 @@ pub fn dispatch(name: &str, args: &Value) -> Result<Value> {
             let diff = diffing::diff(arg(args, "a")?, arg(args, "b")?)?;
             Ok(diff_to_value(&diff))
         }
+        "diff_notebooks" => diff_notebooks(args),
+        "notebook.compare" => notebook_compare(args),
         _ => bail!("unknown function {name:?}"),
     }
+}
+
+/// `{a, b, ignores?, targets?}`: ignores apply first, in object order, then the targets. Both
+/// may be null, like an absent key. `targets` has the keyword arguments of
+/// `set_notebook_diff_targets`: absent ones are true and unknown ones are an error.
+fn diff_notebooks(args: &Value) -> Result<Value> {
+    let mut config = NotebookDiffConfig::new();
+    match args.get("ignores") {
+        None | Some(Value::Null) => {}
+        Some(Value::Object(ignores)) => {
+            let ignores: Vec<_> = ignores
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+            config.set_ignores(&ignores)?;
+        }
+        Some(_) => bail!("ignores must be an object"),
+    }
+    match args.get("targets") {
+        None | Some(Value::Null) => {}
+        Some(Value::Object(targets)) => {
+            const NAMES: [&str; 6] = [
+                "sources",
+                "outputs",
+                "attachments",
+                "metadata",
+                "identifier",
+                "details",
+            ];
+            if let Some(unknown) = targets.keys().find(|k| !NAMES.contains(&k.as_str())) {
+                bail!("unexpected target {unknown:?}");
+            }
+            let flag = |name: &str| targets.get(name).is_none_or(Value::truthy);
+            config.set_targets(&Targets {
+                sources: flag("sources"),
+                outputs: flag("outputs"),
+                attachments: flag("attachments"),
+                metadata: flag("metadata"),
+                identifier: flag("identifier"),
+                details: flag("details"),
+            });
+        }
+        Some(_) => bail!("targets must be an object"),
+    }
+    let diff = diffing::diff_notebooks(arg(args, "a")?, arg(args, "b")?, &config)?;
+    Ok(diff_to_value(&diff))
+}
+
+/// `{pred, x, y}` with the default notebook configuration.
+fn notebook_compare(args: &Value) -> Result<Value> {
+    let predicate = match str_arg(args, "pred")? {
+        "cell_approximate" => Predicate::CellApproximate,
+        "cell_moderate" => Predicate::CellModerate,
+        "cell_strict" => Predicate::CellStrict,
+        "cell_by_ids" => Predicate::CellById,
+        "output_approximate" => Predicate::OutputApproximate,
+        "output_strict" => Predicate::OutputStrict,
+        other => bail!("unknown predicate {other:?}"),
+    };
+    let config = NotebookDiffConfig::new();
+    Ok(Value::Bool(predicate.compare(
+        arg(args, "x")?,
+        arg(args, "y")?,
+        config.config(),
+    )?))
 }
 
 fn chars_arg(args: &Value, name: &str) -> Result<Vec<char>> {

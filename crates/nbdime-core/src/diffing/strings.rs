@@ -9,6 +9,7 @@ use crate::value::Value;
 
 use super::approximate::PreparedStr;
 use super::snakes::{compute_diff_from_snakes, compute_snakes_multilevel};
+use super::DiffError;
 
 /// Character diff of two strings, indexed by code point. `addrange` values are strings.
 pub fn diff_strings_by_char(a: &str, b: &str) -> Diff {
@@ -65,6 +66,20 @@ pub fn diff_strings_linewise(a: &str, b: &str) -> Diff {
         |x, y| Ok::<_, Infallible>(diff_chars(x.chars(), y.chars())),
     )
     .unwrap_or_else(|never| match never {})
+}
+
+/// `diff_string_lines`, the differ of cell sources: equal values give no diff, otherwise the
+/// operands must be strings.
+pub(super) fn diff_string_lines(a: &Value, b: &Value) -> Result<Diff, DiffError> {
+    match (a, b) {
+        (Value::Str(a), Value::Str(b)) => Ok(diff_strings_linewise(a, b)),
+        // Upstream compares lengths and equality before splitting lines, which also accepts
+        // equal lists and dicts.
+        (Value::List(_), Value::List(_)) | (Value::Object(_), Value::Object(_)) if a.py_eq(b) => {
+            Ok(Vec::new())
+        }
+        _ => Err(DiffError::NotStrings),
+    }
 }
 
 #[cfg(test)]
@@ -126,5 +141,20 @@ mod tests {
             json(&diff_strings_linewise("a\n", "")),
             r#"[{"op":"removerange","key":0,"length":1}]"#
         );
+    }
+
+    #[test]
+    fn string_lines_differ_accepts_strings_and_equal_containers() {
+        let (a, b) = (Value::from("a\nb\n"), Value::from("a\nc\n"));
+        assert_eq!(diff_string_lines(&a, &a), Ok(Vec::new()));
+        assert_eq!(
+            diff_string_lines(&a, &b),
+            Ok(diff_strings_linewise("a\nb\n", "a\nc\n"))
+        );
+        let list = Value::List(vec![Value::from("a\n")]);
+        assert_eq!(diff_string_lines(&list, &list), Ok(Vec::new()));
+        let other = Value::List(vec![Value::from("b\n")]);
+        assert_eq!(diff_string_lines(&list, &other), Err(DiffError::NotStrings));
+        assert_eq!(diff_string_lines(&a, &list), Err(DiffError::NotStrings));
     }
 }

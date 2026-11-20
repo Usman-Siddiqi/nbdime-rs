@@ -8,6 +8,7 @@ use nbdime_core::diff_format::diff_to_value;
 use nbdime_core::diffing::{self, snakes::compute_snakes_multilevel};
 use nbdime_core::difflib::SequenceMatcher;
 use nbdime_core::json::{self, DumpOptions};
+use nbdime_core::nbformat;
 use nbdime_core::{Int, Value};
 
 /// Stack size for threads that run the core on untrusted input.
@@ -47,6 +48,8 @@ pub fn dispatch(name: &str, args: &Value) -> Result<Value> {
                 |x, y| x.py_eq(y),
             )))
         }
+        "nbformat.reads" => Ok(nbformat::reads(str_arg(args, "text")?)?),
+        "nbformat.writes" => Ok(Value::from(nbformat::writes(arg(args, "nb")?)?)),
         "diff" => {
             let diff = diffing::diff(arg(args, "a")?, arg(args, "b")?)?;
             Ok(diff_to_value(&diff))

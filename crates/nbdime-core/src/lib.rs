@@ -9,6 +9,7 @@ pub mod diff_utils;
 pub mod diffing;
 pub mod difflib;
 pub mod json;
+pub mod log;
 pub mod merging;
 pub mod nbformat;
 pub mod patch;

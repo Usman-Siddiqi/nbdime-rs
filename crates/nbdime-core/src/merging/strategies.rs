@@ -4,9 +4,11 @@
 use std::collections::{BTreeSet, HashMap};
 
 use crate::diff_format::{Diff, DiffEntry, Key, Op};
+use crate::log::{self, Level};
 use crate::nbformat::IdGenerator;
 use crate::patch::patch;
-use crate::path::star_path_str;
+use crate::path::{join_path, star_path_str};
+use crate::prettyprint::repr_str;
 use crate::value::{Map, Value};
 
 use super::chunks::chunk_typename;
@@ -603,14 +605,23 @@ pub fn resolve_strategy_inline_attachments(
                 _ => return assertion("assert rd.op == DiffOp.PATCH"),
             };
             let (local_name, remote_name) = (format!("LOCAL_{name}"), format!("REMOTE_{name}"));
-            let put = |new_name: String, value: Value| {
+            let put = |new_name: String, value: Value, line: u32| {
                 if attachments.contains_key(&new_name) {
+                    log::emit(
+                        Level::Warning,
+                        "strategies",
+                        line,
+                        format!(
+                            "Replacing previous conflicted attachment with filename {}",
+                            repr_str(&new_name)
+                        ),
+                    );
                     DiffEntry::replace(new_name, value)
                 } else {
                     DiffEntry::add(new_name, value)
                 }
             };
-            let custom_diff = vec![put(local_name, local), put(remote_name, remote)];
+            let custom_diff = vec![put(local_name, local, 217), put(remote_name, remote, 224)];
             decisions.custom(
                 base_path.to_vec(),
                 Some(vec![ld.clone()]),
@@ -732,8 +743,23 @@ pub fn resolve_strategy_record_conflicts(
     );
     let conflicts = Value::Object(conflicts);
     let op = if base.contains_key("nbdime-conflicts") {
+        log::emit(
+            Level::Warning,
+            "strategies",
+            465,
+            "Replacing previous nbdime-conflicts field from base notebook.".into(),
+        );
         DiffEntry::replace("nbdime-conflicts", conflicts)
     } else {
+        log::emit(
+            Level::Warning,
+            "strategies",
+            468,
+            format!(
+                "Recording unresolved conflicts in {}/nbdime-conflicts.",
+                join_path(base_path)
+            ),
+        );
         DiffEntry::add("nbdime-conflicts", conflicts)
     };
     decisions.custom(
@@ -961,7 +987,7 @@ fn should_resolve(strategy: Option<&str>, decisions: &MergeDecisionBuilder) -> O
 
 /// Resolves the conflicts that no strategy has been applied to, for the `use-*` strategies.
 pub fn resolve_strategy_generic(
-    _path: &[Key],
+    path: &[Key],
     decisions: &mut MergeDecisionBuilder,
     strategy: Option<&str>,
 ) {
@@ -978,8 +1004,14 @@ pub fn resolve_strategy_generic(
                 d.conflict = false;
             }
         }
+    } else {
+        log::emit(
+            Level::Error,
+            "strategies",
+            638,
+            format!("Unexpected strategy {strategy} on {}.", join_path(path)),
+        );
     }
-    // Any other strategy is only logged upstream.
 }
 
 /// Resolves the conflicts recorded for a list with the list's strategy.
@@ -1051,7 +1083,16 @@ pub fn resolve_conflicted_decisions_dict(
         "record-conflict" => resolve_strategy_record_conflicts(path, base, decisions)?,
         "inline-attachments" => resolve_strategy_inline_attachments(path, base, decisions)?,
         // The strategy cannot be applied to dicts; upstream only logs it.
-        "union" => {}
+        "union" => {
+            for _ in decisions.decisions.iter().filter(|d| d.conflict) {
+                log::emit(
+                    Level::Error,
+                    "strategies",
+                    707,
+                    format!("Unexpected strategy union for dict on {}.", join_path(path)),
+                );
+            }
+        }
         _ => resolve_strategy_generic(path, decisions, Some(&strategy)),
     }
     Ok(())

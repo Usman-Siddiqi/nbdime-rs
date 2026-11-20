@@ -198,10 +198,35 @@ fn home_dir(env: &dyn Env) -> Result<String, ConfigError> {
             "Could not determine home directory.".into(),
         ));
     }
-    let path = osstr::to_path(&home);
-    Ok(osstr::from_os(
-        fs::canonicalize(&path).unwrap_or(path).as_os_str(),
-    ))
+    Ok(osstr::from_os(resolve(&osstr::to_path(&home)).as_os_str()))
+}
+
+/// `Path.resolve()` (non-strict): symlinks of the part that exists are resolved, the rest is
+/// kept, and the result is absolute with `.` and `..` removed.
+fn resolve(path: &Path) -> PathBuf {
+    use std::path::Component;
+    let Ok(absolute) = std::path::absolute(path) else {
+        return path.to_path_buf();
+    };
+    let mut resolved = PathBuf::new();
+    for component in absolute.components() {
+        match component {
+            Component::ParentDir => {
+                resolved.pop();
+            }
+            Component::CurDir => {}
+            Component::Normal(name) => {
+                resolved.push(name);
+                if fs::symlink_metadata(&resolved).is_ok() {
+                    if let Ok(canonical) = fs::canonicalize(&resolved) {
+                        resolved = canonical;
+                    }
+                }
+            }
+            other => resolved.push(other),
+        }
+    }
+    resolved
 }
 
 /// `jupyter_core.paths.jupyter_config_path()`, in descending priority. The directory of a Python
@@ -445,6 +470,17 @@ mod tests {
     use super::*;
     use crate::testutil::TempDir;
     use nbdime_core::json::parse;
+
+    #[test]
+    fn resolve_is_absolute_even_where_the_path_does_not_exist() {
+        let dir = TempDir::new("resolve");
+        let root = fs::canonicalize(&dir.0).unwrap();
+        std::os::unix::fs::symlink(&root, root.join("link")).unwrap();
+        let wanted = root.join("missing/deeper");
+        assert_eq!(resolve(&root.join("link/missing/./deeper")), wanted);
+        assert_eq!(resolve(&root.join("link/missing/x/../deeper")), wanted);
+        assert!(resolve(Path::new("no/such/dir")).is_absolute());
+    }
 
     fn map(text: &str) -> Map {
         match parse(text).unwrap() {

@@ -25,13 +25,13 @@ impl Env for HashMap<String, String> {
     }
 }
 
-/// The home directory of a user from the passwd database (`pwd.getpwuid(...).pw_dir`).
 #[derive(Clone, Copy)]
 enum Who<'a> {
     Uid(libc::uid_t),
     Name(&'a str),
 }
 
+/// The home directory of a user from the passwd database (`pwd.getpwuid(...).pw_dir`).
 #[allow(unsafe_code)]
 fn passwd_home(who: Who) -> Option<String> {
     let name = match who {

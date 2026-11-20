@@ -6,3 +6,5 @@ test_u05_patch.py
 test_u02_nbformat.py
 test_u04_notebook_diff.py
 test_u10_merge.py
+test_u06_prettyprint.py
+test_u16_xdiff.py

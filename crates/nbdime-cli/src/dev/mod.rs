@@ -281,7 +281,8 @@ fn notebook_compare(args: &Value) -> Result<Value> {
 }
 
 /// The pretty-printer options of a request: `include` (the `diff_ignorables`, absent ones true)
-/// and the booleans `use_color`, `color_words`, `use_git` and `use_diff`.
+/// and the booleans `use_color`, `color_words`, `use_git` and `use_diff`, which must be booleans
+/// when given (upstream indexes its colour table with them).
 fn pretty_print_config(args: &Value) -> Result<PrettyPrintConfig> {
     let mut config = PrettyPrintConfig::default();
     match args.get("include") {
@@ -297,11 +298,15 @@ fn pretty_print_config(args: &Value) -> Result<PrettyPrintConfig> {
         }
         Some(_) => bail!("include must be an object"),
     }
-    let flag = |name: &str, default: bool| args.get(name).map_or(default, Value::truthy);
-    config.use_color = flag("use_color", true);
-    config.color_words = flag("color_words", false);
-    config.use_git = flag("use_git", true);
-    config.use_diff = flag("use_diff", true);
+    let flag = |name: &str, default: bool| match args.get(name) {
+        None => Ok(default),
+        Some(Value::Bool(flag)) => Ok(*flag),
+        Some(other) => bail!("{name} must be a boolean, not {other:?}"),
+    };
+    config.use_color = flag("use_color", true)?;
+    config.color_words = flag("color_words", false)?;
+    config.use_git = flag("use_git", true)?;
+    config.use_diff = flag("use_diff", true)?;
     Ok(config)
 }
 
@@ -322,12 +327,9 @@ fn pp_notebook_diff(args: &Value) -> Result<Value> {
 /// `{base, decisions, include?, use_color, use_git, use_diff}`.
 fn pp_merge_decisions(args: &Value) -> Result<Value> {
     let config = pretty_print_config(args)?;
-    let decisions = list_arg(args, "decisions")?
-        .iter()
-        .map(MergeDecision::from_value)
-        .collect::<Result<Vec<_>, _>>()?;
     let mut out = String::new();
-    Printer::new(&config, &mut out).merge_decisions(arg(args, "base")?, &decisions)?;
+    Printer::new(&config, &mut out)
+        .merge_decision_values(arg(args, "base")?, list_arg(args, "decisions")?)?;
     Ok(Value::from(out))
 }
 

@@ -27,7 +27,7 @@ from types import SimpleNamespace
 import nbformat
 
 from nbdime import prettyprint as pp
-from nbdime.diff_utils import to_diffentry_dicts
+from nbdime.diff_format import DiffEntry
 
 from gen import mutate_json, random_json, random_string, rng_for
 from gen_nb import random_cell, random_output
@@ -52,10 +52,26 @@ def _node(v):
     return nbformat.from_dict(v) if isinstance(v, (dict, list)) else v
 
 
+def _diff_in(di):
+    """Diff entries as the differ hands them to the printer: entries are `DiffEntry`, values are
+    notebook nodes (`to_diffentry_dicts` would also turn dict values into `DiffEntry`)."""
+    out = []
+    for e in di:
+        e = dict(e)
+        if "diff" in e and e["diff"] is not None:
+            e["diff"] = _diff_in(e["diff"])
+        if "value" in e:
+            e["value"] = _node(e["value"])
+        if isinstance(e.get("valuelist"), list):
+            e["valuelist"] = [_node(v) for v in e["valuelist"]]
+        out.append(DiffEntry(e))
+    return out
+
+
 def o_notebook_diff(afn, bfn, a, di, include=None, use_color=True, color_words=False, use_git=True,
                     use_diff=True):
     config, out = _config(include, use_color, color_words, use_git, use_diff)
-    pp.pretty_print_notebook_diff(afn, bfn, _node(a), to_diffentry_dicts(di), config)
+    pp.pretty_print_notebook_diff(afn, bfn, _node(a), _diff_in(di), config)
     return out.getvalue()
 
 
@@ -277,3 +293,44 @@ def test_u06_pformat_widths(engine):
             cases.append({"value": [n * 10 ** 15, -1.0 / n, True, None], "path": None,
                           "prefix": prefix, "use_color": False})
     check_parity(engine, "pp.value", cases, o_value, min_cases=400)
+
+
+def test_u06_review_regressions(engine):
+    """Dict-valued replaces (never produced by the differ on notebooks) and decisions with keys
+    beyond the ones the merger sets."""
+    nb = upstream_pairs()[0]["a"]
+    flags = {"use_color": True, "color_words": False, "use_git": True, "use_diff": True}
+    diff_cases_ = [
+        {"afn": "a", "bfn": "b", "a": nb, "di": [{"op": "replace", "key": "metadata",
+                                                  "value": {"kernelspec": {"name": "x"}, "q": 1}}],
+         **flags},
+        {"afn": "a", "bfn": "b", "a": nb, "di": [{"op": "patch", "key": "metadata", "diff": [
+            {"op": "replace", "key": "language_info", "value": {"name": "julia", "v": [1, 2]}}]}],
+         **flags},
+        {"afn": "a", "bfn": "b", "a": nb, "di": [{"op": "patch", "key": "cells", "diff": [
+            {"op": "patch", "key": 0, "diff": [
+                {"op": "replace", "key": "metadata", "value": {"tags": ["a"], "z": None}}]}]}],
+         **dict(flags, use_color=False)},
+    ]
+    check_parity(engine, "pp.notebook_diff", diff_cases_, o_notebook_diff,
+                 min_cases=len(diff_cases_), max_error_fraction=0.0)
+
+    base = {"cells": [], "metadata": {"a": 1}, "nbformat": 4, "nbformat_minor": 5}
+    def dec(**extra):
+        d = {"common_path": ["metadata"], "conflict": True, "action": "base",
+             "local_diff": [{"op": "replace", "key": "a", "value": 2}],
+             "remote_diff": [{"op": "replace", "key": "a", "value": 3}]}
+        d.update(extra)
+        return d
+    merge_cases_ = [
+        {"base": base, "decisions": [dec(zzz=1, aaa="x", strategy="use-local", _level=1)],
+         "use_color": False, "use_git": True, "use_diff": True},
+        {"base": base, "decisions": [dec(strategy=None)], "use_color": True, "use_git": True,
+         "use_diff": True},
+        {"base": base, "decisions": [dec(strategy=3)], "use_color": False, "use_git": True,
+         "use_diff": True},
+        {"base": base, "decisions": [dec(action="local", strategy=["a"], extra={"k": [1]})],
+         "use_color": True, "use_git": True, "use_diff": True},
+    ]
+    check_parity(engine, "pp.merge_decisions", merge_cases_, o_merge_decisions,
+                 min_cases=len(merge_cases_), max_error_fraction=0.0)

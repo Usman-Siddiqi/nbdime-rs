@@ -9,8 +9,14 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
+chrono.workspace = true
 indexmap.workspace = true
+md-5.workspace = true
+regex-automata.workspace = true
 thiserror.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
 
 [lints]
 workspace = true

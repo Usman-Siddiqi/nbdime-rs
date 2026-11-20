@@ -14,6 +14,7 @@ use nbdime_core::json::{self, DumpOptions};
 use nbdime_core::merging::{self, MergeArgs, MergeDecision, Strategies};
 use nbdime_core::nbformat;
 use nbdime_core::patch::patch;
+use nbdime_core::prettyprint::{render, PrettyPrintConfig, Printer};
 use nbdime_core::{Int, Value};
 
 /// Stack size for threads that run the core on untrusted input.
@@ -71,6 +72,11 @@ pub fn dispatch(name: &str, args: &Value) -> Result<Value> {
         "decide_notebook_merge" => decide_notebook_merge(args),
         "merge_notebooks" => merge_notebooks(args),
         "notebook.compare" => notebook_compare(args),
+        "pp.notebook_diff" => pp_notebook_diff(args),
+        "pp.merge_decisions" => pp_merge_decisions(args),
+        "pp.value" => pp_value(args),
+        "git.diff_render" => git_diff_render(args),
+        "git.merge_render" => git_merge_render(args),
         _ => bail!("unknown function {name:?}"),
     }
 }
@@ -272,6 +278,102 @@ fn notebook_compare(args: &Value) -> Result<Value> {
         arg(args, "y")?,
         config.config(),
     )?))
+}
+
+/// The pretty-printer options of a request: `include` (the `diff_ignorables`, absent ones true)
+/// and the booleans `use_color`, `color_words`, `use_git` and `use_diff`, which must be booleans
+/// when given (upstream indexes its colour table with them).
+fn pretty_print_config(args: &Value) -> Result<PrettyPrintConfig> {
+    let mut config = PrettyPrintConfig::default();
+    match args.get("include") {
+        None | Some(Value::Null) => {}
+        Some(Value::Object(include)) => {
+            let flag = |name: &str, default: bool| include.get(name).map_or(default, Value::truthy);
+            config.sources = flag("sources", true);
+            config.outputs = flag("outputs", true);
+            config.attachments = flag("attachments", true);
+            config.metadata = flag("metadata", true);
+            config.id = flag("id", true);
+            config.details = flag("details", true);
+        }
+        Some(_) => bail!("include must be an object"),
+    }
+    let flag = |name: &str, default: bool| match args.get(name) {
+        None => Ok(default),
+        Some(Value::Bool(flag)) => Ok(*flag),
+        Some(other) => bail!("{name} must be a boolean, not {other:?}"),
+    };
+    config.use_color = flag("use_color", true)?;
+    config.color_words = flag("color_words", false)?;
+    config.use_git = flag("use_git", true)?;
+    config.use_diff = flag("use_diff", true)?;
+    Ok(config)
+}
+
+/// `{afn, bfn, a, di, include?, use_color, color_words, use_git, use_diff}`.
+fn pp_notebook_diff(args: &Value) -> Result<Value> {
+    let config = pretty_print_config(args)?;
+    let diff = diff_from_value(arg(args, "di")?)?;
+    let mut out = String::new();
+    Printer::new(&config, &mut out).notebook_diff(
+        str_arg(args, "afn")?,
+        str_arg(args, "bfn")?,
+        arg(args, "a")?,
+        &diff,
+    )?;
+    Ok(Value::from(out))
+}
+
+/// `{base, decisions, include?, use_color, use_git, use_diff}`.
+fn pp_merge_decisions(args: &Value) -> Result<Value> {
+    let config = pretty_print_config(args)?;
+    let mut out = String::new();
+    Printer::new(&config, &mut out)
+        .merge_decision_values(arg(args, "base")?, list_arg(args, "decisions")?)?;
+    Ok(Value::from(out))
+}
+
+/// `{value, path, prefix, include?, use_color}`.
+fn pp_value(args: &Value) -> Result<Value> {
+    let config = pretty_print_config(args)?;
+    let path = match args.get("path") {
+        None | Some(Value::Null) => None,
+        Some(Value::Str(path)) => Some(path.as_str()),
+        Some(_) => bail!("path must be a string or null"),
+    };
+    let mut out = String::new();
+    Printer::new(&config, &mut out).value_at(
+        arg(args, "value")?,
+        path,
+        str_arg(args, "prefix")?,
+    )?;
+    Ok(Value::from(out))
+}
+
+/// `{a, b, use_color, color_words}`.
+fn git_diff_render(args: &Value) -> Result<Value> {
+    let config = pretty_print_config(args)?;
+    Ok(Value::from(render::diff_render_with_git(
+        str_arg(args, "a")?,
+        str_arg(args, "b")?,
+        &config,
+    )?))
+}
+
+/// `{base, local, remote, strategy}` giving `[merged, status]`.
+fn git_merge_render(args: &Value) -> Result<Value> {
+    let strategy = match args.get("strategy") {
+        None | Some(Value::Null) => None,
+        Some(Value::Str(s)) => Some(s.as_str()),
+        Some(_) => bail!("strategy must be a string or null"),
+    };
+    let (merged, status) = render::merge_render_with_git(
+        str_arg(args, "base")?,
+        str_arg(args, "local")?,
+        str_arg(args, "remote")?,
+        strategy,
+    )?;
+    Ok(Value::List(vec![Value::from(merged), Value::from(status)]))
 }
 
 fn chars_arg(args: &Value, name: &str) -> Result<Vec<char>> {

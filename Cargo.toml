@@ -14,8 +14,12 @@ authors = ["Usman Siddiqi"]
 [workspace.dependencies]
 nbdime-core = { path = "crates/nbdime-core" }
 indexmap = "2"
+libc = "0.2"
 thiserror = "2"
 anyhow = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+md-5 = "0.10"
+regex-automata = { version = "0.4", default-features = false, features = ["std", "syntax", "meta", "perf", "unicode"] }
 
 [workspace.lints.rust]
 unsafe_code = "deny"

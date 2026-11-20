@@ -1,4 +1,5 @@
-//! `difflib.SequenceMatcher` as nbdime uses it: no junk predicate and no autojunk heuristic.
+//! `difflib.SequenceMatcher` as nbdime uses it: no junk predicate, and the autojunk heuristic
+//! only where nbdime leaves it on (the line diffs of the built-in text renderer).
 //!
 //! Matching blocks, opcodes and the three ratios reproduce CPython's results exactly, including
 //! tie-breaking between equally long matches.
@@ -110,6 +111,18 @@ impl<T: Eq + Hash + Clone> PositionIndex<T> {
         PositionIndex(positions)
     }
 
+    /// The index of `SequenceMatcher(autojunk=True)`: with 200 or more elements, those that make
+    /// up more than 1% of the sequence (plus one) are left out.
+    pub fn without_popular(sequence: &[T]) -> Self {
+        let mut index = Self::new(sequence);
+        let n = sequence.len();
+        if n >= 200 {
+            let limit = n / 100 + 1;
+            index.0.retain(|_, positions| positions.len() <= limit);
+        }
+        index
+    }
+
     /// Ascending positions of `elt`.
     fn get(&self, elt: &T) -> Option<&[usize]> {
         self.0.get(elt).map(Vec::as_slice)
@@ -125,6 +138,7 @@ pub struct SequenceMatcher<'a, T> {
     b: &'a [T],
     shared_index: Option<&'a PositionIndex<T>>,
     own_index: OnceCell<PositionIndex<T>>,
+    autojunk: bool,
     matching_blocks: OnceCell<Vec<Match>>,
 }
 
@@ -135,7 +149,16 @@ impl<'a, T: Eq + Hash + Clone> SequenceMatcher<'a, T> {
             b,
             shared_index: None,
             own_index: OnceCell::new(),
+            autojunk: false,
             matching_blocks: OnceCell::new(),
+        }
+    }
+
+    /// `SequenceMatcher(None, a, b)` with Python's default `autojunk=True`.
+    pub fn with_autojunk(a: &'a [T], b: &'a [T]) -> Self {
+        SequenceMatcher {
+            autojunk: true,
+            ..Self::new(a, b)
         }
     }
 
@@ -148,8 +171,15 @@ impl<'a, T: Eq + Hash + Clone> SequenceMatcher<'a, T> {
     }
 
     fn index(&self) -> &PositionIndex<T> {
-        self.shared_index
-            .unwrap_or_else(|| self.own_index.get_or_init(|| PositionIndex::new(self.b)))
+        self.shared_index.unwrap_or_else(|| {
+            self.own_index.get_or_init(|| {
+                if self.autojunk {
+                    PositionIndex::without_popular(self.b)
+                } else {
+                    PositionIndex::new(self.b)
+                }
+            })
+        })
     }
 
     /// The longest match in `a[alo..ahi]` and `b[blo..bhi]`.
@@ -174,8 +204,6 @@ impl<'a, T: Eq + Hash + Clone> SequenceMatcher<'a, T> {
             b: blo,
             size: 0,
         };
-        // Without junk or popular elements the best block can never be extended on either side,
-        // so the extension loops of the original are omitted.
         for i in alo..ahi {
             if let Some(js) = index.get(&self.a[i]) {
                 let start = js.partition_point(|&j| j < blo);
@@ -196,6 +224,21 @@ impl<'a, T: Eq + Hash + Clone> SequenceMatcher<'a, T> {
             scratch.advance();
         }
         scratch.reset();
+        // Elements left out of the index (popular ones) can still extend the block. Without any
+        // the block is already maximal and neither loop moves.
+        while best.a > alo && best.b > blo && self.a[best.a - 1] == self.b[best.b - 1] {
+            best = Match {
+                a: best.a - 1,
+                b: best.b - 1,
+                size: best.size + 1,
+            };
+        }
+        while best.a + best.size < ahi
+            && best.b + best.size < bhi
+            && self.a[best.a + best.size] == self.b[best.b + best.size]
+        {
+            best.size += 1;
+        }
         best
     }
 
@@ -270,6 +313,46 @@ impl<'a, T: Eq + Hash + Clone> SequenceMatcher<'a, T> {
         opcodes
     }
 
+    /// `get_grouped_opcodes(n)`: the opcodes in groups separated by runs of more than `2 * n`
+    /// equal elements, with at most `n` elements of context around each change.
+    pub fn grouped_opcodes(&self, n: usize) -> Vec<Vec<Opcode>> {
+        let mut codes = self.opcodes();
+        if codes.is_empty() {
+            codes.push(Opcode {
+                tag: Tag::Equal,
+                a: 0..1,
+                b: 0..1,
+            });
+        }
+        if let Some(first) = codes.first_mut().filter(|c| c.tag == Tag::Equal) {
+            first.a.start = first.a.start.max(first.a.end.saturating_sub(n));
+            first.b.start = first.b.start.max(first.b.end.saturating_sub(n));
+        }
+        if let Some(last) = codes.last_mut().filter(|c| c.tag == Tag::Equal) {
+            last.a.end = last.a.end.min(last.a.start + n);
+            last.b.end = last.b.end.min(last.b.start + n);
+        }
+        let mut groups = Vec::new();
+        let mut group = Vec::new();
+        for mut code in codes {
+            if code.tag == Tag::Equal && code.a.len() > 2 * n {
+                group.push(Opcode {
+                    tag: Tag::Equal,
+                    a: code.a.start..code.a.end.min(code.a.start + n),
+                    b: code.b.start..code.b.end.min(code.b.start + n),
+                });
+                groups.push(std::mem::take(&mut group));
+                code.a.start = code.a.start.max(code.a.end.saturating_sub(n));
+                code.b.start = code.b.start.max(code.b.end.saturating_sub(n));
+            }
+            group.push(code);
+        }
+        if !group.is_empty() && !(group.len() == 1 && group[0].tag == Tag::Equal) {
+            groups.push(group);
+        }
+        groups
+    }
+
     /// `2 * M / T` for `M` matched elements out of `T` in total; 1.0 when both are empty.
     pub fn ratio(&self) -> f64 {
         let matches = self.matching_blocks().iter().map(|m| m.size).sum();
@@ -282,6 +365,48 @@ impl<'a, T: Eq + Hash + Clone> SequenceMatcher<'a, T> {
 
     pub fn real_quick_ratio(&self) -> f64 {
         real_quick_ratio(self.a.len(), self.b.len())
+    }
+}
+
+/// `difflib.unified_diff(a, b, lineterm=lineterm)` with empty file names and `n` lines of
+/// context: the `---`/`+++` header and then each hunk, as one string per line.
+pub fn unified_diff(a: &[&str], b: &[&str], n: usize, lineterm: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for group in SequenceMatcher::with_autojunk(a, b).grouped_opcodes(n) {
+        if out.is_empty() {
+            out.push(format!("--- {lineterm}"));
+            out.push(format!("+++ {lineterm}"));
+        }
+        let (first, last) = (&group[0], &group[group.len() - 1]);
+        out.push(format!(
+            "@@ -{} +{} @@{lineterm}",
+            format_range_unified(first.a.start, last.a.end),
+            format_range_unified(first.b.start, last.b.end),
+        ));
+        for code in &group {
+            if code.tag == Tag::Equal {
+                out.extend(a[code.a.clone()].iter().map(|line| format!(" {line}")));
+                continue;
+            }
+            if matches!(code.tag, Tag::Replace | Tag::Delete) {
+                out.extend(a[code.a.clone()].iter().map(|line| format!("-{line}")));
+            }
+            if matches!(code.tag, Tag::Replace | Tag::Insert) {
+                out.extend(b[code.b.clone()].iter().map(|line| format!("+{line}")));
+            }
+        }
+    }
+    out
+}
+
+/// `_format_range_unified`: `start,length` of a hunk side, with the line number alone for one
+/// line and an empty range counted from the line before.
+fn format_range_unified(start: usize, stop: usize) -> String {
+    let length = stop - start;
+    match length {
+        1 => (start + 1).to_string(),
+        0 => format!("{start},0"),
+        _ => format!("{},{length}", start + 1),
     }
 }
 
@@ -483,5 +608,131 @@ mod tests {
                 size: 2
             }
         );
+    }
+
+    fn lines(text: &str) -> Vec<&str> {
+        text.lines().collect()
+    }
+
+    #[test]
+    fn unified_diff_hunks() {
+        let a = lines("a\nb\nc\nd\ne\nf\ng\nh");
+        let b = lines("a\nb\nX\nd\ne\nf\ng\nH\ni");
+        assert_eq!(
+            unified_diff(&a, &b, 3, ""),
+            [
+                "--- ",
+                "+++ ",
+                "@@ -1,8 +1,9 @@",
+                " a",
+                " b",
+                "-c",
+                "+X",
+                " d",
+                " e",
+                " f",
+                " g",
+                "-h",
+                "+H",
+                "+i"
+            ]
+        );
+        assert_eq!(
+            unified_diff(&[], &["x"], 3, ""),
+            ["--- ", "+++ ", "@@ -0,0 +1 @@", "+x"]
+        );
+        assert_eq!(
+            unified_diff(&["x"], &[], 3, ""),
+            ["--- ", "+++ ", "@@ -1 +0,0 @@", "-x"]
+        );
+        assert!(unified_diff(&a, &a, 3, "").is_empty());
+        assert!(unified_diff(&[], &[], 3, "").is_empty());
+    }
+
+    #[test]
+    fn unified_diff_splits_distant_changes_into_hunks_with_context() {
+        let mut a = vec!["a"; 21];
+        let mut b = a.clone();
+        a[10] = "b";
+        b[10] = "c";
+        assert_eq!(
+            unified_diff(&a, &b, 3, "\n"),
+            [
+                "--- \n",
+                "+++ \n",
+                "@@ -8,7 +8,7 @@\n",
+                " a",
+                " a",
+                " a",
+                "-b",
+                "+c",
+                " a",
+                " a",
+                " a"
+            ]
+        );
+    }
+
+    #[test]
+    fn autojunk_leaves_popular_elements_out_of_the_index_but_extends_matches_over_them() {
+        let a: Vec<&str> = ["a", "b"]
+            .into_iter()
+            .chain(["x"; 5])
+            .chain(["c", "d"])
+            .collect();
+        let b: Vec<&str> = a.iter().copied().chain(["y"; 200]).collect();
+        // Without autojunk the same blocks result; the popular `x` run is matched by extension.
+        let matcher = SequenceMatcher::with_autojunk(&a, &b);
+        assert_eq!(
+            matcher.matching_blocks(),
+            [
+                Match {
+                    a: 0,
+                    b: 0,
+                    size: 9
+                },
+                Match {
+                    a: 9,
+                    b: 209,
+                    size: 0
+                }
+            ]
+        );
+        let a: Vec<&str> = ["z", "z", "a", "b"]
+            .into_iter()
+            .chain(["x"; 5])
+            .chain(["c", "d", "z", "z"])
+            .collect();
+        let b: Vec<&str> = ["q", "a", "b"]
+            .into_iter()
+            .chain(["x"; 5])
+            .chain(["c", "d"])
+            .chain(["y"; 200])
+            .collect();
+        let matcher = SequenceMatcher::with_autojunk(&a, &b);
+        assert_eq!(
+            matcher.matching_blocks()[0],
+            Match {
+                a: 2,
+                b: 1,
+                size: 9
+            }
+        );
+    }
+
+    #[test]
+    fn autojunk_makes_everything_popular_in_a_small_alphabet() {
+        let a: Vec<char> = "fiahdacbfhdgibjdadge".chars().collect();
+        let b: Vec<char> = "dcdgeafgccebfejjajfbefehfchhcaeafgaigfgjahacjdbdhfifiehbjfeagbdfijfcfeibefecbcehcabjigadjfehgcaahfdcjcgbcgfcagechjcihhfheehgcbgichfcbheiiifbfjaefieheefcjahiefeheiffefgfchfficicdfhebgcjjigejieadcjhjcdc".chars().collect();
+        assert_eq!(b.len(), 200);
+        assert_eq!(
+            SequenceMatcher::with_autojunk(&a, &b).matching_blocks(),
+            [Match {
+                a: 20,
+                b: 200,
+                size: 0
+            }]
+        );
+        assert!(SequenceMatcher::new(&a, &b).matching_blocks().len() > 1);
     }
 }

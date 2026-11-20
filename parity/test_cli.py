@@ -572,3 +572,46 @@ def test_cli_nbmerge_special_inputs(sandbox):
     for c in cases:
         c["mask_new_ids"] = True
     check_cli(cases, root, env, min_cases=len(cases))
+
+
+def test_cli_delta_regressions(sandbox):
+    """Notebook text in the private-use range the engine uses for undecodable name bytes, `:path`
+    revisions, revision forms GitPython rejects, and GIT_DIR from the environment."""
+    root, env = sandbox
+    base = root / "delta"
+    if base.exists():
+        shutil.rmtree(base)
+    rng = rng_for("cli-delta")
+    nb = random_notebook(rng, n_cells=2)
+    texts = []
+    for src in ("x = 1\n", "x = '\U0010F780\U0010F7FF'\ny = '\\udcff'\n"):
+        n = copy.deepcopy(nb)
+        n["cells"].append({"cell_type": "code", "execution_count": None, "metadata": {},
+                           "outputs": [], "source": src, "id": "deadbeef"})
+        texts.append(dumps_disk(n))
+    repo = base / "repo"
+    genv = _commit_repo(repo, env, [{"a.ipynb": texts[0]}, {"a.ipynb": texts[1]}])
+    a, b = base / "a.ipynb", base / "b.ipynb"
+    a.write_text(texts[0])
+    b.write_text(texts[1])
+    (repo / "a.ipynb").write_text(texts[0])
+    _git(repo, "tag", "light", env=genv)
+    cases = [
+        {"cmd": "nbmerge", "args": [str(a), str(a), str(b)]},
+        {"cmd": "nbmerge", "args": [str(a), str(b), str(a), "--decisions"]},
+        {"cmd": "nbmerge", "args": [str(a), str(b), str(a), "--out", "{out}"]},
+        {"cmd": "nbdiff", "args": ["--no-color", str(a), str(b)]},
+        {"cmd": "nbdiff", "args": [str(b), str(a)]},
+    ]
+    revs = [[":nope.ipynb"], ["HEAD~1", ":nope.ipynb"], [":a.ipynb"], ["HEAD^{foo}"],
+            ["HEAD^{blob}"], ["light^{tag}"], ["HEAD^{tree}~1"], ["HEAD^{commit}"], ["HEAD@{9}"],
+            ["@{-5}"], ["HEAD@{-1}"], [":/"], [":/!x"], ["HEAD:nope.ipynb"], ["HEAD~1:sub/nope"],
+            ["deadbee@{1}"], ["HEAD~1", "light"]]
+    cases += [{"cmd": "nbdiff", "args": ["--no-color"] + r, "cwd": str(repo)} for r in revs]
+    other = base / "other"
+    _commit_repo(other, env, [{"z.ipynb": texts[1]}])
+    cases += [{"cmd": "nbdiff", "args": ["--no-color"] + r, "cwd": str(repo),
+               "env": {"GIT_DIR": str(other / ".git")}} for r in ([], ["HEAD~1"])]
+    cases += [{"cmd": "nbdiff", "args": ["--no-color", "HEAD~1"], "cwd": str(repo),
+               "env": {"GIT_DIR": ".git"}}]
+    check_cli(cases, root, dict(env, GIT_CEILING_DIRECTORIES=str(root)), min_cases=len(cases))

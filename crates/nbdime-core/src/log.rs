@@ -2,7 +2,8 @@
 //!
 //! Upstream prints these on stderr as `[W strategies:468] message`, so each record carries the
 //! module and line number of the upstream call. The engine collects the records in the order they
-//! are emitted; the caller decides what to print and takes them with [`take`].
+//! are emitted while a collector is active ([`begin`]); the caller decides what to print and takes
+//! them with [`take`]. Nobody collecting means nothing is kept.
 
 use std::cell::RefCell;
 
@@ -40,24 +41,32 @@ pub struct Record {
 }
 
 thread_local! {
-    static RECORDS: RefCell<Vec<Record>> = const { RefCell::new(Vec::new()) };
+    /// `None` while nobody collects.
+    static RECORDS: RefCell<Option<Vec<Record>>> = const { RefCell::new(None) };
 }
 
-/// Records a message on the current thread.
+/// Starts collecting the records emitted on the current thread, dropping any collected before.
+pub fn begin() {
+    RECORDS.with(|records| *records.borrow_mut() = Some(Vec::new()));
+}
+
+/// Records a message on the current thread if a collector is active.
 pub fn emit(level: Level, module: &'static str, line: u32, message: String) {
     RECORDS.with(|records| {
-        records.borrow_mut().push(Record {
-            level,
-            module,
-            line,
-            message,
-        });
+        if let Some(records) = records.borrow_mut().as_mut() {
+            records.push(Record {
+                level,
+                module,
+                line,
+                message,
+            });
+        }
     });
 }
 
-/// Removes and returns the records emitted on the current thread.
+/// Stops collecting and returns the records emitted on the current thread since [`begin`].
 pub fn take() -> Vec<Record> {
-    RECORDS.with(|records| std::mem::take(&mut *records.borrow_mut()))
+    RECORDS.with(|records| records.borrow_mut().take().unwrap_or_default())
 }
 
 #[cfg(test)]
@@ -66,13 +75,23 @@ mod tests {
 
     #[test]
     fn records_are_taken_in_order() {
-        take();
+        begin();
         emit(Level::Warning, "strategies", 468, "first".into());
         emit(Level::Error, "decisions", 219, "second".into());
         let records = take();
         assert_eq!(records.len(), 2);
         assert_eq!(records[0].message, "first");
         assert_eq!(records[1].level.initial(), 'E');
+        assert!(take().is_empty());
+    }
+
+    #[test]
+    fn nothing_is_kept_without_a_collector() {
+        take();
+        emit(Level::Warning, "strategies", 468, "dropped".into());
+        begin();
+        assert!(take().is_empty());
+        emit(Level::Warning, "strategies", 468, "dropped".into());
         assert!(take().is_empty());
     }
 

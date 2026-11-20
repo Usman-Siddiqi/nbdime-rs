@@ -3,9 +3,25 @@
 use std::mem::discriminant;
 
 use crate::diff_format::{Diff, DiffEntry, DiffFormatError, Key, Op};
-use crate::patch::{invalid, join_into, PatchError};
 use crate::py::{py_len, splitlines_keepends};
-use crate::value::Value;
+use crate::value::{PyType, Value};
+
+fn invalid<T>(msg: impl Into<String>) -> Result<T, DiffFormatError> {
+    Err(DiffFormatError(msg.into()))
+}
+
+/// Python's name for the type of `v`, as it appears in `TypeError` messages.
+pub(crate) fn type_name(v: &Value) -> &'static str {
+    match v.py_type() {
+        PyType::None => "NoneType",
+        PyType::Bool => "bool",
+        PyType::Int => "int",
+        PyType::Float => "float",
+        PyType::Str => "str",
+        PyType::List => "list",
+        PyType::Dict => "dict",
+    }
+}
 
 /// How many items a single sequence diff entry consumes from the base and the remote sequence.
 ///
@@ -17,21 +33,17 @@ pub fn count_consumed_symbols(e: &DiffEntry) -> Result<(usize, usize), DiffForma
             match valuelist {
                 Value::List(items) => items.len(),
                 Value::Str(s) => s.chars().count(),
-                _ => {
-                    return Err(DiffFormatError(
-                        "addrange valuelist is not a sequence".into(),
-                    ))
-                }
+                _ => return invalid("addrange valuelist is not a sequence"),
             },
         )),
         Op::RemoveRange { length } => Ok((*length, 0)),
         Op::Patch { .. } => Ok((1, 1)),
-        op => Err(DiffFormatError(format!("Invalid op '{}'", op.name()))),
+        op => invalid(format!("Invalid op '{}'", op.name())),
     }
 }
 
 /// Copies a sequence diff entry with `n` added to its key.
-pub fn offset_op(e: &DiffEntry, n: isize) -> Result<DiffEntry, PatchError> {
+pub fn offset_op(e: &DiffEntry, n: isize) -> Result<DiffEntry, DiffFormatError> {
     let shifted = match &e.key {
         Key::Index(i) => i.checked_add_signed(n),
         Key::Name(_) => None,
@@ -46,7 +58,7 @@ pub fn offset_op(e: &DiffEntry, n: isize) -> Result<DiffEntry, PatchError> {
 }
 
 /// A source as one string; a list of lines is joined with `\n` after stripping each line's own.
-pub fn source_as_string(source: &Value) -> Result<String, PatchError> {
+pub fn source_as_string(source: &Value) -> Result<String, DiffFormatError> {
     match source {
         Value::Str(s) => Ok(s.clone()),
         Value::List(lines) => {
@@ -60,7 +72,37 @@ pub fn source_as_string(source: &Value) -> Result<String, PatchError> {
             Ok(parts.join("\n"))
         }
         other => invalid(format!(
-            "Invalid argument type. Should be string or sequence of strings. Got {other:?}"
+            "Invalid argument type. Should be string or sequence of strings. Got {}",
+            type_name(other)
+        )),
+    }
+}
+
+/// `"".join(valuelist)`.
+pub(crate) fn join_into(out: &mut String, valuelist: &Value) -> Result<(), DiffFormatError> {
+    match valuelist {
+        Value::Str(s) => out.push_str(s),
+        Value::List(items) => items.iter().try_for_each(|v| join_value(out, v))?,
+        Value::Object(m) => m.keys().for_each(|k| out.push_str(k)),
+        other => {
+            return invalid(format!(
+                "can only join an iterable, not '{}'",
+                type_name(other)
+            ))
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn join_value(out: &mut String, v: &Value) -> Result<(), DiffFormatError> {
+    match v {
+        Value::Str(s) => {
+            out.push_str(s);
+            Ok(())
+        }
+        other => invalid(format!(
+            "sequence item: expected str instance, {} found",
+            type_name(other)
         )),
     }
 }
@@ -74,10 +116,13 @@ pub enum StrOrLines<'a> {
 
 /// Translates a diff of lines (as split by `str.splitlines(True)`) into a diff of the joined
 /// string, with keys in code points.
+///
+/// The diff is parsed eagerly: an entry upstream would copy through untouched but that is
+/// malformed (see F-015) is an error here.
 pub fn flatten_list_of_string_diff(
-    a: &StrOrLines,
+    a: StrOrLines,
     linebased_diff: &[DiffEntry],
-) -> Result<Diff, PatchError> {
+) -> Result<Diff, DiffFormatError> {
     let lines: Vec<&str> = match a {
         StrOrLines::Str(s) => splitlines_keepends(s),
         StrOrLines::Lines(lines) => lines.to_vec(),
@@ -93,7 +138,7 @@ pub fn flatten_list_of_string_diff(
         line_to_char
             .get(i)
             .copied()
-            .ok_or_else(|| PatchError::Invalid("list index out of range".into()))
+            .ok_or_else(|| DiffFormatError("list index out of range".into()))
     };
 
     let mut charbased = Vec::with_capacity(linebased_diff.len());
@@ -116,7 +161,7 @@ pub fn flatten_list_of_string_diff(
             Op::RemoveRange { length } => {
                 let end = key
                     .checked_add(*length)
-                    .ok_or_else(|| PatchError::Invalid("list index out of range".into()))?;
+                    .ok_or_else(|| DiffFormatError("list index out of range".into()))?;
                 charbased.push(DiffEntry::removerange(line_offset, at(end)? - line_offset));
             }
             op => charbased.push(DiffEntry {
@@ -144,7 +189,7 @@ fn is_add(op: &Op) -> bool {
 
 /// Whether `new` can be merged into the last op so far: same op at the same key, an add and an
 /// addrange at the same key, or removeranges that touch.
-fn overlaps(existing: &DiffEntry, new: &DiffEntry) -> Result<bool, PatchError> {
+fn overlaps(existing: &DiffEntry, new: &DiffEntry) -> Result<bool, DiffFormatError> {
     let (Key::Index(ek), Key::Index(nk)) = (&existing.key, &new.key) else {
         return invalid("sequence diff entry without integer key");
     };
@@ -153,8 +198,12 @@ fn overlaps(existing: &DiffEntry, new: &DiffEntry) -> Result<bool, PatchError> {
             return Ok(true);
         }
         if let Op::RemoveRange { length } = existing.op {
-            if ek + length >= *nk {
-                if ek + length != *nk {
+            // Python integers do not overflow, and an end this large cannot equal `nk`.
+            let end = ek
+                .checked_add(length)
+                .ok_or_else(|| DiffFormatError("Unexpected diff keys/lengths".into()))?;
+            if end >= *nk {
+                if end != *nk {
                     return invalid("Unexpected diff keys/lengths");
                 }
                 return Ok(true);
@@ -167,7 +216,7 @@ fn overlaps(existing: &DiffEntry, new: &DiffEntry) -> Result<bool, PatchError> {
 }
 
 /// Merges `new` into `existing`, which `overlaps` accepted.
-fn combine_ops(existing: &mut DiffEntry, new: DiffEntry) -> Result<(), PatchError> {
+fn combine_ops(existing: &mut DiffEntry, new: DiffEntry) -> Result<(), DiffFormatError> {
     if let Op::Add { value } = &mut existing.op {
         let value = std::mem::take(value);
         existing.op = Op::AddRange {
@@ -193,7 +242,10 @@ fn combine_ops(existing: &mut DiffEntry, new: DiffEntry) -> Result<(), PatchErro
             _ => invalid("valuelist has no append"),
         },
         (Op::RemoveRange { length }, Op::RemoveRange { length: more }) => {
-            *length += more;
+            // Beyond u64 the exact Python integer cannot be represented (F-015).
+            *length = length
+                .checked_add(more)
+                .ok_or_else(|| DiffFormatError("removerange length out of range".into()))?;
             Ok(())
         }
         // Upstream's _combine_ops returns None for any other equal pair (two patches or two
@@ -203,7 +255,7 @@ fn combine_ops(existing: &mut DiffEntry, new: DiffEntry) -> Result<(), PatchErro
 }
 
 /// `valuelist += more`: a list takes the items of any iterable, a string only a string.
-fn extend_valuelist(valuelist: &mut Value, more: Value) -> Result<(), PatchError> {
+fn extend_valuelist(valuelist: &mut Value, more: Value) -> Result<(), DiffFormatError> {
     match (valuelist, more) {
         (Value::List(items), Value::List(more)) => items.extend(more),
         (Value::List(items), Value::Str(s)) => {
@@ -237,9 +289,9 @@ mod tests {
         assert!(count_consumed_symbols(&DiffEntry::remove("k")).is_err());
     }
 
-    fn flat(a: &str, diff: &str) -> Result<Diff, PatchError> {
+    fn flat(a: &str, diff: &str) -> Result<Diff, DiffFormatError> {
         let diff = crate::diff_format::diff_from_value(&crate::json::parse(diff).unwrap()).unwrap();
-        flatten_list_of_string_diff(&StrOrLines::Str(a), &diff)
+        flatten_list_of_string_diff(StrOrLines::Str(a), &diff)
     }
 
     fn json(diff: &Diff) -> String {
@@ -283,7 +335,10 @@ mod tests {
             r#"[{"op":"addrange","key":1,"valuelist":["x\n"]},{"op":"removerange","key":1,"length":1},{"op":"addrange","key":1,"valuelist":["y\n"]}]"#,
         )
         .unwrap();
-        assert_eq!(d.len(), 3);
+        assert_eq!(
+            json(&d),
+            r#"[{"op":"addrange","key":2,"valuelist":"x\n"},{"op":"removerange","key":2,"length":2},{"op":"addrange","key":2,"valuelist":"y\n"}]"#
+        );
     }
 
     #[test]
@@ -311,7 +366,7 @@ mod tests {
             .unwrap(),
         )
         .unwrap();
-        let d = flatten_list_of_string_diff(&StrOrLines::Lines(&["ab\n", "c\n"]), &diff).unwrap();
+        let d = flatten_list_of_string_diff(StrOrLines::Lines(&["ab\n", "c\n"]), &diff).unwrap();
         assert_eq!(
             json(&d),
             r#"[{"op":"addrange","key":0,"valuelist":"a"},{"op":"addrange","key":5,"valuelist":"z"}]"#
@@ -329,6 +384,52 @@ mod tests {
             json(&d),
             r#"[{"op":"addrange","key":0,"valuelist":["x","y"]}]"#
         );
+    }
+
+    #[test]
+    fn a_string_valuelist_grows_by_concatenation() {
+        // addrange then add: the joined string takes the added string
+        let d = flat(
+            "a\n",
+            r#"[{"op":"addrange","key":0,"valuelist":["x"]},{"op":"add","key":0,"value":"y"}]"#,
+        )
+        .unwrap();
+        assert_eq!(json(&d), r#"[{"op":"addrange","key":0,"valuelist":"xy"}]"#);
+        // add then addrange: the list takes the characters of the joined string
+        let d = flat(
+            "a\n",
+            r#"[{"op":"add","key":0,"value":"x"},{"op":"addrange","key":0,"valuelist":["yz"]}]"#,
+        )
+        .unwrap();
+        assert_eq!(
+            json(&d),
+            r#"[{"op":"addrange","key":0,"valuelist":["x","y","z"]}]"#
+        );
+        // a string cannot take a non-string
+        let r = flat(
+            "a\n",
+            r#"[{"op":"addrange","key":0,"valuelist":["x"]},{"op":"add","key":0,"value":1}]"#,
+        );
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn removerange_lengths_that_overflow_are_errors() {
+        let max = i64::MAX;
+        let rr = |key: usize, length: i64| {
+            format!(r#"{{"op":"removerange","key":{key},"length":{length}}}"#)
+        };
+        let nested =
+            |ops: &[String]| format!(r#"[{{"op":"patch","key":0,"diff":[{}]}}]"#, ops.join(","));
+        // 2 * i64::MAX still fits and is reported exactly, 3 * i64::MAX does not
+        let two = flat("a\n", &nested(&[rr(0, max), rr(0, max)])).unwrap();
+        assert_eq!(
+            json(&two),
+            r#"[{"op":"removerange","key":0,"length":18446744073709551614}]"#
+        );
+        assert!(flat("a\n", &nested(&[rr(0, max), rr(0, max), rr(0, max)])).is_err());
+        // an end beyond u64 is never equal to the next key
+        assert!(flat("a\n", &nested(&[rr(5, max), rr(5, max), rr(6, 1)])).is_err());
     }
 
     #[test]

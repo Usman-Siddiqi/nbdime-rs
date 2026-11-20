@@ -3,8 +3,10 @@
 use std::collections::HashSet;
 
 use crate::diff_format::{DiffEntry, DiffFormatError, Key, Op};
-use crate::diff_utils::{flatten_list_of_string_diff, StrOrLines};
-use crate::value::{Map, PyType, Value};
+use crate::diff_utils::{
+    flatten_list_of_string_diff, join_into, join_value, type_name, StrOrLines,
+};
+use crate::value::{Map, Value};
 
 /// A diff that cannot be applied to the object it was given for.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -19,7 +21,7 @@ pub enum PatchError {
     Format(#[from] DiffFormatError),
 }
 
-pub(crate) fn invalid<T>(msg: impl Into<String>) -> Result<T, PatchError> {
+fn invalid<T>(msg: impl Into<String>) -> Result<T, PatchError> {
     Err(PatchError::Invalid(msg.into()))
 }
 
@@ -48,7 +50,7 @@ pub fn patch_list(obj: &[Value], diff: &[DiffEntry]) -> Result<Vec<Value>, Patch
         out.extend_from_slice(slice(obj, take, index));
         let skip = match &e.op {
             Op::AddRange { valuelist } => {
-                out.extend(iterate(valuelist)?);
+                extend_from_iterable(&mut out, valuelist)?;
                 0
             }
             Op::RemoveRange { length } => *length,
@@ -78,7 +80,7 @@ pub fn patch_list(obj: &[Value], diff: &[DiffEntry]) -> Result<Vec<Value>, Patch
 
 /// Patches a multiline string with a line-based diff.
 pub fn patch_string(obj: &str, diff: &[DiffEntry]) -> Result<String, PatchError> {
-    let flat = flatten_list_of_string_diff(&StrOrLines::Str(obj), diff)?;
+    let flat = flatten_list_of_string_diff(StrOrLines::Str(obj), diff)?;
     patch_singleline_string(obj, &flat)
 }
 
@@ -150,7 +152,7 @@ pub fn patch_dict(obj: &Map, diff: &[DiffEntry]) -> Result<Value, PatchError> {
                     return invalid(format!("cannot patch deleted key: {key:?}"));
                 }
                 let Some(item) = obj.get(key) else {
-                    return invalid(format!("KeyError: {key:?}"));
+                    return invalid(format!("key not found in object: {key:?}"));
                 };
                 out.insert(key.clone(), patch(item, diff)?);
             }
@@ -166,18 +168,6 @@ pub fn patch_dict(obj: &Map, diff: &[DiffEntry]) -> Result<Value, PatchError> {
         }
     }
     Ok(Value::Object(out))
-}
-
-fn type_name(v: &Value) -> &'static str {
-    match v.py_type() {
-        PyType::None => "NoneType",
-        PyType::Bool => "bool",
-        PyType::Int => "int",
-        PyType::Float => "float",
-        PyType::Str => "str",
-        PyType::List => "list",
-        PyType::Dict => "dict",
-    }
 }
 
 fn list_key(e: &DiffEntry) -> Result<usize, PatchError> {
@@ -198,44 +188,15 @@ fn slice<T>(items: &[T], start: usize, end: usize) -> &[T] {
     }
 }
 
-/// The items of a `valuelist` as `list.extend` sees them: a string yields its characters and a
-/// dict its keys.
-fn iterate(valuelist: &Value) -> Result<Vec<Value>, PatchError> {
+/// `out.extend(valuelist)`: a string yields its characters and a dict its keys.
+fn extend_from_iterable(out: &mut Vec<Value>, valuelist: &Value) -> Result<(), PatchError> {
     match valuelist {
-        Value::List(items) => Ok(items.clone()),
-        Value::Str(s) => Ok(s.chars().map(|c| Value::Str(c.to_string())).collect()),
-        Value::Object(m) => Ok(m.keys().map(|k| Value::Str(k.clone())).collect()),
-        other => invalid(format!("'{}' object is not iterable", type_name(other))),
-    }
-}
-
-/// `"".join(valuelist)`.
-pub(crate) fn join_into(out: &mut String, valuelist: &Value) -> Result<(), PatchError> {
-    match valuelist {
-        Value::Str(s) => out.push_str(s),
-        Value::List(items) => items.iter().try_for_each(|v| join_value(out, v))?,
-        Value::Object(m) => m.keys().for_each(|k| out.push_str(k)),
-        other => {
-            return invalid(format!(
-                "can only join an iterable, not '{}'",
-                type_name(other)
-            ))
-        }
+        Value::List(items) => out.extend(items.iter().cloned()),
+        Value::Str(s) => out.extend(s.chars().map(|c| Value::Str(c.to_string()))),
+        Value::Object(m) => out.extend(m.keys().map(|k| Value::Str(k.clone()))),
+        other => return invalid(format!("'{}' object is not iterable", type_name(other))),
     }
     Ok(())
-}
-
-fn join_value(out: &mut String, v: &Value) -> Result<(), PatchError> {
-    match v {
-        Value::Str(s) => {
-            out.push_str(s);
-            Ok(())
-        }
-        other => invalid(format!(
-            "sequence item: expected str instance, {} found",
-            type_name(other)
-        )),
-    }
 }
 
 /// Maps code point indices of a string to byte offsets.
@@ -407,6 +368,17 @@ mod tests {
         assert_eq!(patch_singleline_string("héllo", &diff).unwrap(), "hé!");
         let bad = diff_from_value(&v(r#"[{"op":"add","key":0,"value":1}]"#)).unwrap();
         assert!(patch_singleline_string("x", &bad).is_err());
+    }
+
+    #[test]
+    fn overflowing_removerange_ends_are_errors() {
+        // The merged end 5 + 2 * i64::MAX is beyond u64; upstream sees it is not 6.
+        let max = i64::MAX;
+        let diff = format!(
+            r#"[{{"op":"patch","key":0,"diff":[{{"op":"removerange","key":5,"length":{max}}},
+                {{"op":"removerange","key":5,"length":{max}}},{{"op":"removerange","key":6,"length":1}}]}}]"#
+        );
+        assert!(run(r#""abcdefgh\n""#, &diff).is_err());
     }
 
     #[test]

@@ -149,10 +149,20 @@ anything requires explicit approval from the project owner (see CLAUDE.md).
   stderr, then carries on. nbdime-rs does not validate against the schema (only the id repair
   part of validation has an effect on the data), so it prints nothing. stdout is unaffected.
 
-### F-015: diff keys in patch input
-- Upstream's `patch_list` accepts `true`/`false` as list keys (Python bools are ints) and
-  negative integers (slicing from the end). No differ produces them; nbdime-rs rejects them with
-  an error rather than reproducing slicing-from-the-end behavior for hand-edited diffs.
+### F-015: diff keys and lengths in patch and flatten input
+Deliberate deviations; no differ produces any of these, and each is an error here.
+- List keys and `removerange` lengths must be non-negative integers that fit `i64`. Upstream also
+  accepts `true`/`false` (Python bools are ints; as a length they count as 1/0), negative
+  integers (slicing from the end; a negative `removerange` length duplicates items), floats
+  (some work through int/float arithmetic) and integers above `i64::MAX` (slices clamp).
+- Merged `removerange` lengths in `flatten_list_of_string_diff` must fit `u64`. Upstream's exact
+  integer can be larger (three lengths of `i64::MAX` give 27670116110564327421); an end beyond
+  `u64` is an error, as upstream's is, since it can never equal the next key.
+- `flatten_list_of_string_diff` parses its diff eagerly, so unknown ops, odd keys or non-list
+  inner diffs that upstream would copy through untouched are errors. For `patch` and
+  `patch_*`, missing fields, unknown ops and wrong types are errors, as upstream.
+- `patch` rejects a non-list empty iterable (`{}` or `""`) as a diff; upstream accepts it.
+- The dev tool's `flatten_list_of_string_diff` requires every line of `a` to be a string.
 
 ## Open questions
 

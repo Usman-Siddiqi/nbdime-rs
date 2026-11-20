@@ -152,13 +152,13 @@ fn snakes_multilevel_lines(args: &Value) -> Result<Value> {
 fn flatten(args: &Value) -> Result<Value> {
     let diff = diff_from_value(arg(args, "diff")?)?;
     let flat = match arg(args, "a")? {
-        Value::Str(s) => flatten_list_of_string_diff(&StrOrLines::Str(s), &diff)?,
+        Value::Str(s) => flatten_list_of_string_diff(StrOrLines::Str(s), &diff)?,
         Value::List(items) => {
             let lines: Vec<&str> = items
                 .iter()
                 .map(|v| v.as_str().context("lines must be strings"))
                 .collect::<Result<_>>()?;
-            flatten_list_of_string_diff(&StrOrLines::Lines(&lines), &diff)?
+            flatten_list_of_string_diff(StrOrLines::Lines(&lines), &diff)?
         }
         _ => bail!("argument \"a\" must be a string or a list of strings"),
     };

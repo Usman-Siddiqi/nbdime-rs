@@ -759,7 +759,7 @@ pub fn resolve_strategy_inline_source(
             let (Value::Str(local), Value::Str(remote)) = (&local, &remote) else {
                 return invalid("a string patch gives a string");
             };
-            let (merged, status) = merge_render(base, local, remote)?;
+            let (merged, status) = merge_render(base, local, remote, None)?;
             if path.last() != Some(&Key::from("source")) {
                 return assertion("assert path[-1] == \"source\"");
             }
@@ -896,7 +896,7 @@ fn resolve_strategy_inline_recurse(
                     else {
                         return invalid("cell sources must be strings");
                     };
-                    Value::from(merge_render("", l, r)?.0)
+                    Value::from(merge_render("", l, r, None)?.0)
                 }
                 "metadata" | "id" => {
                     let (Some(l), Some(r)) = (lmap.get(name), rmap.get(name)) else {

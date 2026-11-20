@@ -143,6 +143,8 @@ anything requires explicit approval from the project owner (see CLAUDE.md).
   upgrades). v3 was superseded in 2015; the converters are large and rarely exercised. A missing
   `nbformat` key (upstream: v1) and non-integer versions (`4.0`; upstream: `AssertionError`) are
   errors too. Resolves Q-003. Can be revisited in Phase 4 if users ask.
+- The error message depends on the version: 1 to 3 suggest the conversion above, 5 and above say
+  the notebook is newer than supported, anything else says `"nbformat"` must be the integer 4.
 
 ### F-013: no schema validation messages
 - `nbformat.read` validates against the JSON schema and logs "Notebook JSON is invalid" to
@@ -155,6 +157,17 @@ anything requires explicit approval from the project owner (see CLAUDE.md).
   and accepts such (garbage) notebooks, as it does for every other schema violation. In a fuzz
   run over about 30,000 notebooks with random scalar values in every field this was the only
   difference found besides the documented deviations (F-003, F-012, Q-002).
+
+### F-018: deep nesting in notebooks
+- Upstream fails with `RecursionError` at about 1,000 levels of nesting in `nbformat.reads`
+  (`from_dict`) and at about 500 levels in `nbformat.writes` (`copy.deepcopy`). nbdime-rs reads
+  and writes anything the JSON parser accepts, up to 9,998 levels (F-009 covers the diff).
+- **Decision**: accept (deliberate), as with F-009. `Value`'s derived `Clone`, its drop glue and some
+  operations recurse, so library callers on small stacks (the default 2 MB for a spawned thread)
+  can overflow on values nested several thousand levels deep. The CLI and the Python bindings
+  run the engine on a large-stack worker thread. `writes` clones the whole notebook once, as the
+  spec allows; cloning only the levels that change is not possible without sharing, which
+  `Value` does not do.
 
 ### F-015: diff keys in patch input
 - Upstream's `patch_list` accepts `true`/`false` as list keys (Python bools are ints) and

@@ -75,6 +75,10 @@ pub enum Op {
     RemoveRange { length: usize },
     /// Apply a nested diff to the value at the key.
     Patch { diff: Diff },
+    /// Marks a key whose parent was deleted on the other side. Internal to the merge engine:
+    /// diffing never produces it and it is neither valid in a diff nor serialized as a diff op
+    /// by anything but a decision that kept it.
+    ParentDeleted,
 }
 
 impl Op {
@@ -86,6 +90,7 @@ impl Op {
             Op::AddRange { .. } => "addrange",
             Op::RemoveRange { .. } => "removerange",
             Op::Patch { .. } => "patch",
+            Op::ParentDeleted => "parent_deleted",
         }
     }
 }
@@ -136,6 +141,13 @@ impl DiffEntry {
         DiffEntry {
             key: key.into(),
             op: Op::Patch { diff },
+        }
+    }
+
+    pub fn parent_deleted(key: impl Into<Key>) -> Self {
+        DiffEntry {
+            key: key.into(),
+            op: Op::ParentDeleted,
         }
     }
 
@@ -318,19 +330,24 @@ pub fn diff_to_value(diff: &[DiffEntry]) -> Value {
 
 pub fn entry_to_value(e: &DiffEntry) -> Value {
     let mut m = Map::with_capacity(3);
-    m.insert("op".into(), Value::from(e.op.name()));
-    m.insert(
-        "key".into(),
-        match &e.key {
-            Key::Index(i) => Value::from(*i),
-            Key::Name(s) => Value::from(s.as_str()),
-        },
-    );
+    let op = Value::from(e.op.name());
+    let key = match &e.key {
+        Key::Index(i) => Value::from(*i),
+        Key::Name(s) => Value::from(s.as_str()),
+    };
+    if matches!(e.op, Op::ParentDeleted) {
+        // Upstream builds this entry as `DiffEntry(key=..., op=...)`.
+        m.insert("key".into(), key);
+        m.insert("op".into(), op);
+    } else {
+        m.insert("op".into(), op);
+        m.insert("key".into(), key);
+    }
     match &e.op {
         Op::Add { value } | Op::Replace { value } => {
             m.insert("value".into(), value.clone());
         }
-        Op::Remove => {}
+        Op::Remove | Op::ParentDeleted => {}
         Op::AddRange { valuelist } => {
             m.insert("valuelist".into(), valuelist.clone());
         }
@@ -386,6 +403,8 @@ pub fn entry_from_value(v: &Value) -> Result<DiffEntry, DiffFormatError> {
         Some("patch") => Op::Patch {
             diff: diff_from_value(field("diff")?)?,
         },
+        // Merge decisions carry these; patching rejects them.
+        Some("parent_deleted") => Op::ParentDeleted,
         _ => return err(format!("Unknown diff op '{:?}'.", m.get("op"))),
     };
     Ok(DiffEntry { key, op })
@@ -453,5 +472,13 @@ mod tests {
         let nested_bad = vec![DiffEntry::patch("x", bad)];
         assert!(validate_diff(&nested_bad, false).is_ok());
         assert!(validate_diff(&nested_bad, true).is_err());
+    }
+
+    #[test]
+    fn parent_deleted_entries_round_trip() {
+        let text = r#"[{"key":"a","op":"parent_deleted"}]"#;
+        let diff = diff_from_value(&parse(text).unwrap()).unwrap();
+        assert_eq!(diff, [DiffEntry::parent_deleted("a")]);
+        assert_eq!(dumps(&diff_to_value(&diff), &DumpOptions::compact()), text);
     }
 }

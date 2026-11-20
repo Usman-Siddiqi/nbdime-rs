@@ -51,10 +51,10 @@ pub fn merge_notebooks(...) -> Result<(Value, Vec<MergeDecision>), MergeError>;
 - Inline source conflicts call `merge_render(base, local, remote, None)` (upstream:
   `prettyprint.merge_render`, which runs `git merge-file`). U16 is porting git's merge in
   parallel. Until U16 lands, implement `merge_render` behind one internal function in
-  `merging/text.rs` that runs `git merge-file -p local base remote` in a temp dir exactly as
+  `merging/text.rs` that runs `git merge-file -p local base remote` (with upstream's diff3 and builtin fallbacks) in a temp dir exactly as
   upstream's `external_merge_render` + `merge_render_with_git` do (including `\r\n` → `\n` and
   the trailing `rstrip()`); the orchestrator switches it to `crate::xdiff::merge_render` when
-  both are merged. Spawn `git` with `GIT_CONFIG_NOSYSTEM=1` and `GIT_CONFIG_GLOBAL=/dev/null`.
+  both are merged. Do not override the user's git configuration (F-022, F-026).
 - **F-021 (deliberate deviation)**: inline-cells conflict marker cells
   (`nbformat.v4.new_markdown_cell`) get random ids upstream; ours are deterministic, 8 lowercase
   hex chars, distinct within one notebook and from all other ids in it (same scheme as F-003

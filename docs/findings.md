@@ -109,7 +109,9 @@ anything requires explicit approval from the project owner (see CLAUDE.md).
     limit, F-009), so the engine may return a
     result where upstream raises.
   - Identical notebooks with list sources, which upstream diffs without error, are an error
-    here ("text operands must be strings").
+    here ("text operands must be strings"). Notebook merges (`decide_notebook_merge`,
+    `merge_notebooks`) inherit this: they fail on notebooks whose sources are lists of lines,
+    where upstream merges.
 - **Integration requirement**: upstream callers often pass `json.load` output (on-disk form,
   list sources). Differential run on 300 such pairs: the engine errored where upstream
   succeeded on 28. The PyO3 integration must fall back to the Python implementation when the
@@ -175,7 +177,7 @@ anything requires explicit approval from the project owner (see CLAUDE.md).
   temp files, fallbacks to `diff3`/`diff` and the builtin renderers), so text rendering honours
   the user's git version and configuration just like upstream. An in-process reproduction was
   tried (U16) and withdrawn for licensing reasons (F-023). The parity harness pins git 2.43 with no
-  system or global config (`parity/conftest.py`), which the engine inherits.
+  system or global config (`parity/conftest.py`), which the engine inherits. Merge rendering: F-026.
 - Related upstream quirk replicated: `merge_render_with_git` raises `IndexError` when git's output
   is empty (all three inputs empty, or empty merge result); the engine returns an error there.
 
@@ -312,6 +314,52 @@ Deliberate deviations; no differ produces any of these, and each is an error her
   like upstream (F-022), which keeps the BSD license clean and gives exact parity. A clean-room
   in-process renderer can be reconsidered in Phase 4 only from a behaviour spec, by an author who
   has not read git's sources.
+
+### F-025: `copy.copy(notebook_config)` drops the configured ignores (U10)
+Upstream `_split_addrange` aligns inserted items with `copy.copy(notebook_config)`.
+`defaultdict2.copy` builds the copy through `defaultdict.copy`, which passes the original dict as
+`default_values` and then replaces it, so every key set on `notebook_differs` after import
+(`set_notebook_diff_ignores` / `set_notebook_diff_targets`) is lost in the copy. Inserts are
+therefore always aligned with the default notebook differs, even when the notebook diffs were
+made with sources, outputs, etc. ignored. Reproduced as is (the decision list depends on it);
+upstream's intent was presumably to honour the configured ignores. Candidate for an upstream report
+(ask the owner first).
+
+### F-026: `merge_render` runs the same external tools as upstream (U10)
+`merging::text::merge_render` is the implementation of upstream's `prettyprint.merge_render`, not
+a stand-in: the in-process git merge (U16) is not coming for now (F-022's plan for it is on hold).
+It follows upstream's fallback chain exactly. With `git` on `PATH` it runs `git merge-file -p
+local base remote` (plus `--ours`, `--theirs` or `--union` for the `use-local`, `use-remote` and
+`union` strategies; `use-base` returns the base); otherwise, with `diff3` on `PATH`, `diff3 -m
+local base remote`; otherwise the built-in renderer, which calls any difference between the
+sides one conflict (`builtin_merge_render` and `format_merge_render_lines`, quirks included: the
+doubled final newline, and a common last line that is repeated after the conflict).
+- The tools run in a private temporary directory (mode 0700, unpredictable name, files created
+  exclusively with mode 0600; removed on every path), and inherit the caller's environment. The
+  library sets no `GIT_CONFIG_*` variable: like upstream, it honours the user's git configuration
+  (`merge.conflictStyle`, `core.autocrlf`, ...). The parity harness pins git's configuration in
+  its own environment (`parity/conftest.py`), which the engine inherits, so parity runs see git's
+  defaults.
+- Same results as upstream, hence the same dependence on the installed tool: the three renderers
+  produce different text for the same conflict (diff3 shows the base section, the built-in one
+  has no merge at all), and a clean merge in git can be a conflict in the built-in renderer.
+- `\r\n` in the tool's output becomes `\n`; git output that is empty is an error (upstream's
+  `IndexError`), with git's standard error text added to the message. A tool that cannot be run
+  or whose output is not UTF-8 is an error as well (upstream raises).
+- Upstream logs a warning when a strategy is ignored; the engine does not print.
+
+### F-028: path keys that Python accepts and the engine rejects (U10)
+- **Decision (deliberate, same class as F-015)**: `common_path` entries of a decision must be
+  non-negative integers that fit `i64`, or strings. Upstream also accepts negative integers
+  (`resolved[-1]` counts from the end of a list) and booleans (ints in Python) when it resolves
+  the path in `apply_decisions`. `decide_merge` and the notebook merge never produce such paths;
+  only hand-written decisions fed to `apply_decisions` can, and they are an error here.
+- **`build_diffs(Which::Merged)` always fails**: upstream's `build_diffs(base, decisions, which)`
+  with `which="merged"` resolves each decision with `resolve_action(base[path], md)`, where
+  `path` is a tuple: `KeyError` on a dict, `TypeError` on a list. The only caller, the
+  `autoresolve` module (itself unused by the rest of upstream), asks for `local` and `remote`
+  only, so nothing in upstream reaches it. The engine returns an error for it too rather than
+  inventing a meaning. Candidate for an upstream cleanup (ask the owner first).
 
 ## Open questions
 

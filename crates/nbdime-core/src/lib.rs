@@ -9,8 +9,10 @@ pub mod diff_utils;
 pub mod diffing;
 pub mod difflib;
 pub mod json;
+pub mod merging;
 pub mod nbformat;
 pub mod patch;
+pub mod path;
 pub mod py;
 pub mod value;
 

@@ -29,6 +29,16 @@ pub fn splitlines_keepends(s: &str) -> Vec<&str> {
     lines
 }
 
+/// `str.isspace()` for one character: Unicode White_Space plus the separators `\x1c` to `\x1f`.
+pub fn is_space(c: char) -> bool {
+    c.is_whitespace() || ('\x1c'..='\x1f').contains(&c)
+}
+
+/// `str.rstrip()`.
+pub fn rstrip(s: &str) -> &str {
+    s.trim_end_matches(is_space)
+}
+
 /// `str.splitlines()` (without line ends).
 pub fn splitlines(s: &str) -> Vec<&str> {
     splitlines_keepends(s)
@@ -69,6 +79,14 @@ pub fn py_len(s: &str) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rstrip_strips_python_whitespace() {
+        assert_eq!(rstrip("a \t\n\x0b\x0c\r\x1c\x1f\u{85}\u{a0}\u{2003}"), "a");
+        assert_eq!(rstrip(" a b"), " a b");
+        assert_eq!(rstrip("\u{200b}"), "\u{200b}");
+        assert_eq!(rstrip(""), "");
+    }
 
     #[test]
     fn splitlines_matches_python() {

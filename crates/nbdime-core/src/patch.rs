@@ -70,6 +70,7 @@ pub fn patch_list(obj: &[Value], diff: &[DiffEntry]) -> Result<Vec<Value>, Patch
                 out.push(value.clone());
                 1
             }
+            Op::ParentDeleted => return invalid("Invalid op parent_deleted"),
         };
         // take never decreases: repeated +/- at one index can pass it.
         take = take.max(index.saturating_add(skip));
@@ -114,6 +115,7 @@ pub fn patch_singleline_string(obj: &str, diff: &[DiffEntry]) -> Result<String, 
                 join_value(&mut out, value)?;
                 1
             }
+            Op::ParentDeleted => return invalid("Invalid op parent_deleted"),
         };
         take = take.max(index.saturating_add(skip));
     }

@@ -424,9 +424,9 @@ fn repair_ids(cells: &mut [Value], writing: bool) -> Result<(), NbformatError> {
 /// An id is the first 8 hex digits of the 64-bit FNV-1a hash of the cell's canonical JSON
 /// (compact, keys sorted, ASCII escapes). When that id is taken, the hash is continued with the
 /// bytes `:1`, `:2`, ... until it is not.
-struct IdGenerator {
+pub(crate) struct IdGenerator {
     /// Every string id in the notebook, explicit or generated.
-    taken: HashSet<String>,
+    pub(crate) taken: HashSet<String>,
     /// The next suffix to try for a content hash. The suffix sequence depends on the hash
     /// state alone and `taken` only grows, so suffixes before this one are known to be taken.
     next_suffix: HashMap<u64, u32>,
@@ -438,7 +438,7 @@ struct IdGenerator {
 }
 
 impl IdGenerator {
-    fn new(writing: bool) -> Self {
+    pub(crate) fn new(writing: bool) -> Self {
         IdGenerator {
             taken: HashSet::new(),
             next_suffix: HashMap::new(),
@@ -454,7 +454,7 @@ impl IdGenerator {
     }
 
     /// An id for `cell` that is not taken yet, which is then taken.
-    fn generate(&mut self, cell: &Value) -> String {
+    pub(crate) fn generate(&mut self, cell: &Value) -> String {
         let content = self.hash_content(cell);
         let mut suffix = self.next_suffix.get(&content).copied().unwrap_or(0);
         loop {

@@ -1,0 +1,114 @@
+{
+ "date": "2026-11-21T07:31:08",
+ "hardware": {
+  "machine": "x86_64",
+  "cpus": 4,
+  "platform": "Linux-6.18.44-fc-v726-x86_64-with-glibc2.39",
+  "cpu": "Intel(R) Xeon(R) Processor @ 2.10GHz",
+  "mem_kb": 16473744
+ },
+ "versions": {
+  "python": "3.13.18",
+  "nbdime": "4.0.4",
+  "nbformat": "5.11.1",
+  "nbdime_rs_git": "308dbf8"
+ },
+ "runs": [
+  {
+   "variant": "ids",
+   "cells": 100,
+   "engine": "rs-cli",
+   "times": [
+    0.008837106000001427,
+    0.00815645100000495,
+    0.0077774920000024395
+   ],
+   "best": 0.0077774920000024395,
+   "timed_out": false
+  },
+  {
+   "variant": "ids",
+   "cells": 400,
+   "engine": "rs-cli",
+   "times": [
+    0.029929354999993052,
+    0.03615605400000277,
+    0.033027754000002574
+   ],
+   "best": 0.029929354999993052,
+   "timed_out": false
+  },
+  {
+   "variant": "ids",
+   "cells": 1600,
+   "engine": "rs-cli",
+   "times": [
+    0.1626262829999945,
+    0.1774946110000002,
+    0.16860447700000236
+   ],
+   "best": 0.1626262829999945,
+   "timed_out": false
+  },
+  {
+   "variant": "ids",
+   "cells": 3000,
+   "engine": "rs-cli",
+   "times": [
+    0.743033238999999,
+    0.4003282210000094,
+    0.4069412200000073
+   ],
+   "best": 0.4003282210000094,
+   "timed_out": false
+  },
+  {
+   "variant": "noids",
+   "cells": 100,
+   "engine": "rs-cli",
+   "times": [
+    0.01194426899999712,
+    0.012225522999997906,
+    0.013520489000001135
+   ],
+   "best": 0.01194426899999712,
+   "timed_out": false
+  },
+  {
+   "variant": "noids",
+   "cells": 400,
+   "engine": "rs-cli",
+   "times": [
+    0.0538160720000036,
+    0.055193252999998776,
+    0.051589440000000764
+   ],
+   "best": 0.051589440000000764,
+   "timed_out": false
+  },
+  {
+   "variant": "noids",
+   "cells": 1600,
+   "engine": "rs-cli",
+   "times": [
+    0.4334736540000108,
+    0.4297663449999902,
+    0.4420026510000099
+   ],
+   "best": 0.4297663449999902,
+   "timed_out": false
+  },
+  {
+   "variant": "noids",
+   "cells": 3000,
+   "engine": "rs-cli",
+   "times": [
+    1.735586398999999,
+    1.4258751719999907,
+    1.3676530369999966
+   ],
+   "best": 1.3676530369999966,
+   "timed_out": false
+  }
+ ]
+}

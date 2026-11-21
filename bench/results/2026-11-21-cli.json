@@ -1,0 +1,138 @@
+{
+ "date": "2026-11-21T07:30:12",
+ "hardware": {
+  "machine": "x86_64",
+  "cpus": 4,
+  "platform": "Linux-6.18.44-fc-v726-x86_64-with-glibc2.39",
+  "cpu": "Intel(R) Xeon(R) Processor @ 2.10GHz",
+  "mem_kb": 16473744
+ },
+ "versions": {
+  "python": "3.13.18",
+  "nbdime": "4.0.4",
+  "nbformat": "5.11.1",
+  "nbdime_rs_git": "308dbf8"
+ },
+ "runs": [
+  {
+   "variant": "ids",
+   "cells": 100,
+   "engine": "upstream-cli",
+   "times": [
+    1.498558769000006
+   ],
+   "best": 1.498558769000006,
+   "timed_out": false
+  },
+  {
+   "variant": "ids",
+   "cells": 100,
+   "engine": "rs-cli",
+   "times": [
+    0.10856503800000894
+   ],
+   "best": 0.10856503800000894,
+   "timed_out": false
+  },
+  {
+   "variant": "ids",
+   "cells": 400,
+   "engine": "upstream-cli",
+   "times": [
+    1.2580103810000054
+   ],
+   "best": 1.2580103810000054,
+   "timed_out": false
+  },
+  {
+   "variant": "ids",
+   "cells": 400,
+   "engine": "rs-cli",
+   "times": [
+    0.027621168000010243
+   ],
+   "best": 0.027621168000010243,
+   "timed_out": false
+  },
+  {
+   "variant": "ids",
+   "cells": 1600,
+   "engine": "upstream-cli",
+   "times": [
+    2.288070711000003
+   ],
+   "best": 2.288070711000003,
+   "timed_out": false
+  },
+  {
+   "variant": "ids",
+   "cells": 1600,
+   "engine": "rs-cli",
+   "times": [
+    0.16273667599999442
+   ],
+   "best": 0.16273667599999442,
+   "timed_out": false
+  },
+  {
+   "variant": "noids",
+   "cells": 100,
+   "engine": "upstream-cli",
+   "times": [
+    1.2898682710000031
+   ],
+   "best": 1.2898682710000031,
+   "timed_out": false
+  },
+  {
+   "variant": "noids",
+   "cells": 100,
+   "engine": "rs-cli",
+   "times": [
+    0.014858630000006201
+   ],
+   "best": 0.014858630000006201,
+   "timed_out": false
+  },
+  {
+   "variant": "noids",
+   "cells": 400,
+   "engine": "upstream-cli",
+   "times": [
+    3.793734649000001
+   ],
+   "best": 3.793734649000001,
+   "timed_out": false
+  },
+  {
+   "variant": "noids",
+   "cells": 400,
+   "engine": "rs-cli",
+   "times": [
+    0.05455906599999594
+   ],
+   "best": 0.05455906599999594,
+   "timed_out": false
+  },
+  {
+   "variant": "noids",
+   "cells": 1600,
+   "engine": "upstream-cli",
+   "times": [
+    39.4293282
+   ],
+   "best": 39.4293282,
+   "timed_out": false
+  },
+  {
+   "variant": "noids",
+   "cells": 1600,
+   "engine": "rs-cli",
+   "times": [
+    0.5064084419999944
+   ],
+   "best": 0.5064084419999944,
+   "timed_out": false
+  }
+ ]
+}

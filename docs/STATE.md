@@ -1,6 +1,6 @@
 # Current state (compact; read this first on restart)
 
-Updated 2026-11-21 00:10 UTC. Details live in `docs/progress.md`, decisions in `docs/findings.md`.
+Updated 2026-11-21 07:40 UTC. Details live in `docs/progress.md`, decisions in `docs/findings.md`.
 
 ## Merged to main
 - U01–U05, U02 (JSON I/O, generic diff, patch, nbformat), U04 notebook diff, U10 merge engine,
@@ -9,8 +9,23 @@ Updated 2026-11-21 00:10 UTC. Details live in `docs/progress.md`, decisions in `
   upstream (F-022, F-023).
 - Enabled parity suites: `parity/enabled_suites.txt`.
 
-## In flight
-- Nothing. Next unit: U08.
+## PAUSED 2026-11-21 07:40 UTC (owner's usage limit). Resume Thursday 2026-11-26, 2 PM Toronto.
+Exactly where to resume:
+1. U14 (git drivers, config-git, nbpatch) and U08 (nbshow with Pygments-compatible Python
+   lexer) implementers were stopped mid-work by the rate limit. Their unfinished work is
+   committed locally as `wip(u14)` / `wip(u08)` on branches `unit/u14`, `unit/u08` (worktrees
+   `../wt/u14`, `../wt/u08`) and saved as git bundles in the project files folder
+   (`/mnt/project-files/nbdime-rs-wip/unit-u14.bundle`, `unit-u08.bundle`; both are
+   `main..unit/uXX` at main 308dbf8). If the worktrees are gone: `git fetch <bundle>
+   unit/uXX:unit/uXX`, then `git worktree add ../wt/uXX unit/uXX`.
+2. U14's last state: 4 config tests of `parity/test_upstream_suite.py` still failed beyond
+   `test_nbshow_app`. U08 had the regex-lexer machinery and Python lexer in progress.
+3. Resume each implementer with its prompt (`scratchpad/wave1/impl-u14.md`, `impl-u08.md`; if the
+   scratchpad is gone, the specs are `docs/process/u14-git.md` and `docs/process/u08-nbshow.md`
+   and the acceptance gates are in them). Then one hostile review each (findings become parity
+   cases), fix, gate, merge; enable `test_cli_git.py`, `test_cli_nbshow.py`,
+   `test_upstream_suite.py` in `parity/enabled_suites.txt`.
+4. Then U15 (PyO3 package), Phase 3 to 5.
 
 ## Next
 - U08 nbshow/nbpatch (Pygments lexers; IPython environment question open).

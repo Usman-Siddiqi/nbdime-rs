@@ -8,6 +8,8 @@
 //! exactly where upstream raises.
 
 use std::cell::OnceCell;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 
 use crate::diff_format::Op;
 use crate::value::{Map, Value};
@@ -32,15 +34,24 @@ pub(super) struct Item<'a> {
     value: &'a Value,
     /// `value["id"]` of an object that has one.
     id: Option<&'a Value>,
+    /// A hash of `id` when it is a string, so that most pairs of different ids are told apart
+    /// without comparing them.
+    id_hash: Option<u64>,
     cell: OnceCell<PreparedCell<'a>>,
     output: OnceCell<PreparedOutput<'a>>,
 }
 
 impl<'a> Item<'a> {
     pub(super) fn new(value: &'a Value) -> Self {
+        let id = value.get("id");
         Item {
             value,
-            id: value.get("id"),
+            id,
+            id_hash: id.and_then(Value::as_str).map(|id| {
+                let mut hasher = DefaultHasher::new();
+                id.hash(&mut hasher);
+                hasher.finish()
+            }),
             cell: OnceCell::new(),
             output: OnceCell::new(),
         }
@@ -579,8 +590,14 @@ pub(super) fn compare_cell_strict(x: &Item<'_>, y: &Item<'_>) -> Result<bool, Di
     Ok(true)
 }
 
+#[inline]
 pub(super) fn compare_cell_by_ids(x: &Item<'_>, y: &Item<'_>) -> Result<bool, DiffError> {
     if x.value.is_object() && y.value.is_object() {
+        if let (Some(hx), Some(hy)) = (x.id_hash, y.id_hash) {
+            if hx != hy {
+                return Ok(false);
+            }
+        }
         return Ok(matches!((x.id, y.id), (Some(a), Some(b)) if a.py_eq(b)));
     }
     // Cells that are no objects: `'id' in x and 'id' in y and x['id'] == y['id']`.

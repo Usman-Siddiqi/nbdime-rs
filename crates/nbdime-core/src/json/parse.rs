@@ -5,6 +5,7 @@
 //! the position of its first occurrence with the value of its last. The parser is iterative and
 //! accepts the same maximum nesting depth as CPython's `json` module ([`MAX_DEPTH`]).
 
+use super::scan::plain_prefix_len;
 use crate::value::{Int, Map, Value};
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -316,12 +317,7 @@ impl Parser<'_> {
         let mut out = String::new();
         loop {
             let chunk_start = self.pos;
-            while let Some(&b) = self.bytes.get(self.pos) {
-                if b == b'"' || b == b'\\' || b < 0x20 {
-                    break;
-                }
-                self.pos += 1;
-            }
+            self.pos += plain_prefix_len(&self.bytes[self.pos..], false);
             out.push_str(&self.src[chunk_start..self.pos]);
             match self.peek() {
                 None => return Err(self.error_at(open, "Unterminated string starting at")),

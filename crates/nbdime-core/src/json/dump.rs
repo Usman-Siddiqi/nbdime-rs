@@ -2,6 +2,7 @@
 
 use std::fmt::Write as _;
 
+use super::scan::plain_prefix_len;
 use crate::value::Value;
 
 /// The subset of `json.dumps` keyword arguments nbdime uses.
@@ -147,8 +148,20 @@ fn newline(out: &mut String, options: &DumpOptions, level: usize) {
 
 /// `json.encoder.(py_)encode_basestring(_ascii)`.
 pub fn write_string(out: &mut String, s: &str, ensure_ascii: bool) {
+    out.reserve(s.len() + 2);
     out.push('"');
-    for c in s.chars() {
+    let bytes = s.as_bytes();
+    // `s[start..at]` is pending output that needs no escaping. Every escaped character starts
+    // with a byte this scan stops at, so `at` is always on a character boundary when it stops.
+    let (mut start, mut at) = (0, 0);
+    loop {
+        // With ensure_ascii Python escapes everything outside ' '..='~', including DEL.
+        at += plain_prefix_len(&bytes[at..], ensure_ascii);
+        if at == bytes.len() {
+            break;
+        }
+        out.push_str(&s[start..at]);
+        let c = s[at..].chars().next().expect("a character starts here");
         match c {
             '"' => out.push_str("\\\""),
             '\\' => out.push_str("\\\\"),
@@ -157,20 +170,27 @@ pub fn write_string(out: &mut String, s: &str, ensure_ascii: bool) {
             '\t' => out.push_str("\\t"),
             '\u{8}' => out.push_str("\\b"),
             '\u{c}' => out.push_str("\\f"),
-            c if (c as u32) < 0x20 => {
-                let _ = write!(out, "\\u{:04x}", c as u32);
-            }
-            // With ensure_ascii Python escapes everything outside ' '..='~', including DEL.
-            c if ensure_ascii && !(' '..='~').contains(&c) => {
+            c => {
                 let mut units = [0u16; 2];
-                for unit in c.encode_utf16(&mut units) {
-                    let _ = write!(out, "\\u{unit:04x}");
+                for &unit in c.encode_utf16(&mut units).iter() {
+                    push_unicode_escape(out, unit);
                 }
             }
-            c => out.push(c),
         }
+        at += c.len_utf8();
+        start = at;
     }
+    out.push_str(&s[start..]);
     out.push('"');
+}
+
+/// `\uXXXX` with lowercase hex digits.
+fn push_unicode_escape(out: &mut String, unit: u16) {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    out.push_str("\\u");
+    for shift in [12, 8, 4, 0] {
+        out.push(char::from(HEX[usize::from((unit >> shift) & 0xf)]));
+    }
 }
 
 /// `float.__repr__` as used by `json.dumps`, including `NaN`/`Infinity`.

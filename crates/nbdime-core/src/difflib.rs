@@ -767,9 +767,9 @@ mod tests {
         let longest = |alo: usize, ahi: usize, blo: usize, bhi: usize| {
             let (mut besti, mut bestj, mut bestsize) = (alo, blo, 0);
             let mut j2len: HashMap<usize, usize> = HashMap::new();
-            for i in alo..ahi {
+            for (i, ai) in a.iter().enumerate().take(ahi).skip(alo) {
                 let mut newj2len = HashMap::new();
-                for &j in index.get(&a[i]).unwrap_or(&[]) {
+                for &j in index.get(ai).unwrap_or(&[]) {
                     if j < blo {
                         continue;
                     }

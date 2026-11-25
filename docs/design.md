@@ -79,7 +79,7 @@ nbdime_rs.merge_notebooks(base, local, remote, args=None, *, ignores=None, targe
 nbdime_rs.ENGINE_VERSION, nbdime_rs.NBDIME_COMPAT = "4.0.4", nbdime_rs.EngineError
 ```
 
-`ignores` maps paths to `True`/`False`/a list of keys, `targets` has the keyword arguments of
+`ignores` maps paths to `True`/`False` or a list, tuple or set of keys. `targets` has the keyword arguments of
 `set_notebook_diff_targets`, `args` the `nbmerge` options; all as in the `nbdime-rs-dev`
 functions of the same names. Conversion rules and threading are in F-040 and F-041.
 

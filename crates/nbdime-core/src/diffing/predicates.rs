@@ -242,31 +242,53 @@ fn is_base64(s: &str, len: usize) -> bool {
     if len < MIN_LEN {
         return false;
     }
-    // The pattern is case insensitive and Unicode aware, so `[a-z]` also takes the characters
-    // that fold to ASCII letters: dotted capital I, dotless i, long s and the Kelvin sign.
-    let is_digit = |c: char| {
-        c.is_ascii_alphanumeric()
-            || matches!(
-                c,
-                '+' | '/' | '\u{130}' | '\u{131}' | '\u{17f}' | '\u{212a}'
-            )
-    };
-    let (mut digits, mut padding) = (0usize, 0usize);
-    // `''.join(s.splitlines())` drops every line boundary.
-    let without_line_ends = s.chars().filter(|&c| !is_line_end(c));
-    for c in without_line_ends {
-        if padding == 0 && is_digit(c) {
-            digits += 1;
-        } else if c == '=' && padding < 2 {
-            padding += 1;
-        } else {
+    let mut scan = Base64Scan::default();
+    for (at, &byte) in s.as_bytes().iter().enumerate() {
+        if !byte.is_ascii() {
+            return s[at..].chars().all(|c| scan.step(c)) && scan.is_complete();
+        }
+        if !scan.step(char::from(byte)) {
             return false;
         }
     }
-    match padding {
-        0 => digits % 4 == 0,
-        1 => digits % 4 == 3,
-        _ => digits % 4 == 2,
+    scan.is_complete()
+}
+
+/// The state of matching `^(?:[a-z0-9+/]{4})*(?:[a-z0-9+/]{2}==|[a-z0-9+/]{3}=)?$` (case
+/// insensitive) against `''.join(s.splitlines())`, one character of `s` at a time.
+#[derive(Default)]
+struct Base64Scan {
+    digits: usize,
+    padding: usize,
+}
+
+impl Base64Scan {
+    /// Takes the next character; false once the text can no longer match.
+    #[inline]
+    fn step(&mut self, c: char) -> bool {
+        // The pattern is Unicode aware, so `[a-z]` also takes the characters that fold to ASCII
+        // letters: dotted capital I, dotless i, long s and the Kelvin sign.
+        let is_digit = c.is_ascii_alphanumeric()
+            || matches!(
+                c,
+                '+' | '/' | '\u{130}' | '\u{131}' | '\u{17f}' | '\u{212a}'
+            );
+        if self.padding == 0 && is_digit {
+            self.digits += 1;
+        } else if c == '=' && self.padding < 2 {
+            self.padding += 1;
+        } else if !is_line_end(c) {
+            return false;
+        }
+        true
+    }
+
+    fn is_complete(&self) -> bool {
+        match self.padding {
+            0 => self.digits % 4 == 0,
+            1 => self.digits % 4 == 3,
+            _ => self.digits % 4 == 2,
+        }
     }
 }
 
@@ -364,6 +386,10 @@ fn compare_mimedata(
         return compare_text(maxlen);
     }
     if let (Some(px), Some(py)) = (xe.text.as_ref(), ye.text.as_ref()) {
+        // Both the base64 and the text comparison accept equal strings.
+        if px.text() == py.text() {
+            return Ok(true);
+        }
         if xe.is_base64() {
             return Ok(px.len() == py.len() && px.text() == py.text());
         }

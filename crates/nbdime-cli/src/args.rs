@@ -21,6 +21,8 @@ pub const DIFF_IGNORABLES: [&str; 6] = [
     "details",
 ];
 
+const IGNORABLES_DESCRIPTION: &str = "Set which parts of the notebook (not) to process.";
+
 const LOG_LEVELS: [&str; 5] = ["DEBUG", "INFO", "WARN", "ERROR", "CRITICAL"];
 
 /// The merge strategies `nbmerge` accepts (`cli_conflict_strategies`).
@@ -67,8 +69,143 @@ pub fn add_diff_args(parser: &mut Parser) {
             "process/ignore details not covered by other options.",
         ),
     ] {
-        parser.add(Action::ignorable(&short_and_long, dest).help(help));
+        parser.add(
+            Action::ignorable(&short_and_long, dest)
+                .help(help)
+                .group("ignorables", IGNORABLES_DESCRIPTION),
+        );
     }
+}
+
+/// `add_web_args`: the options of the commands that show a web page.
+pub fn add_web_args(parser: &mut Parser, default_port: i64) {
+    let port_help: &'static str = if default_port == 0 {
+        "specify the port you want the server to run on. Default is 0 (random)."
+    } else {
+        "specify the port you want the server to run on. Default is 8888."
+    };
+    parser.add(
+        Action::store(&["-p", "--port"], "port", Value::from(default_port))
+            .int()
+            .help(port_help),
+    );
+    parser.add(
+        Action::store(&["-b", "--browser"], "browser", Value::Null)
+            .help("specify the browser to use, to override the system default."),
+    );
+    parser.add(
+        Action::flag(Kind::StoreTrue, &["--persist"], "persist", Value::Bool(false)).help(
+            "prevent server shutting down on remote close request (when these would normally be supported).",
+        ),
+    );
+    parser.add(
+        Action::store(&["--ip"], "ip", Value::from("127.0.0.1")).help(
+            "specify the interface to listen to for the web server. NOTE: Setting this to anything other than 127.0.0.1/localhost might comprimise the security of your computer. Use with care!",
+        ),
+    );
+    let cwd = std::env::current_dir().map_or_else(
+        |_| Value::Null,
+        |dir| Value::from(crate::osstr::from_os(dir.as_os_str())),
+    );
+    parser.add(
+        Action::store(&["-w", "--workdirectory"], "workdirectory", cwd).help(
+            "specify the working directory you want the server to run from. Default is the actual cwd at program start.",
+        ),
+    );
+    parser.add(
+        Action::store(&["--base-url"], "base_url", Value::from("/"))
+            .help("The base URL prefix under which to run the web app"),
+    );
+    parser.add(
+        Action::flag(
+            Kind::StoreFalse,
+            &["--show-unchanged"],
+            "hide_unchanged",
+            Value::Bool(true),
+        )
+        .help("show unchanged cells by default"),
+    );
+    parser.add(
+        Action::store(
+            &["--identical-lines-margin"],
+            "identical_lines_margin",
+            Value::from(2),
+        )
+        .int()
+        .help("Margin for collapsing identical lines in editor; set to -1 to deactivate."),
+    );
+}
+
+/// `add_filter_args`: `--use-filter`.
+pub fn add_filter_args(parser: &mut Parser) {
+    parser.add(
+        Action::flag(
+            Kind::StoreTrue,
+            &["--use-filter"],
+            "use_filter",
+            Value::Bool(false),
+        )
+        .help("apply any configured git filters on remote"),
+    );
+}
+
+/// `add_git_diff_driver_args`: the seven arguments git gives a diff driver and the two it adds
+/// for renames; only `path`, `base` and `remote` are kept.
+pub fn add_git_diff_driver_args(parser: &mut Parser) {
+    add_filter_args(parser);
+    parser.add(Action::positional("path", Nargs::One, Value::Null));
+    parser.add(Action::positional("base", Nargs::Optional, Value::Null));
+    parser.add(Action::skipped());
+    parser.add(Action::skipped());
+    parser.add(Action::positional("remote", Nargs::Optional, Value::Null));
+    for _ in 0..4 {
+        parser.add(Action::skipped());
+    }
+}
+
+/// `add_filename_args`: required positionals named `names`.
+pub fn add_filename_args(parser: &mut Parser, names: &[&str]) {
+    for name in names {
+        let help = match *name {
+            "notebook" => "The notebook filename.",
+            "base" => "The base notebook filename.",
+            "local" => "The local modified notebook filename.",
+            "remote" => "The remote modified notebook filename.",
+            "merged" => "The merge result notebook filename.",
+            "patch" => "The patch filename, output from nbdiff.",
+            _ => "",
+        };
+        parser.add(Action::positional(name, Nargs::One, Value::Null).help(help));
+    }
+}
+
+/// `add_git_config_subcommand`: the parser of `config --enable | --disable [--global | --system]`,
+/// for the caller to add to its subcommands.
+pub fn add_git_config_subcommand(
+    prog: &str,
+    subparser_help: &'static str,
+    enable_help: &'static str,
+    disable_help: &'static str,
+) -> Parser {
+    let mut config = Parser::new(&format!("{prog} config"), subparser_help);
+    config.add_exclusive(
+        false,
+        vec![
+            Action::constant(&["--global"], "scope", Value::from("global"))
+                .help("configure your global git config instead of the current repo"),
+            Action::constant(&["--system"], "scope", Value::from("system"))
+                .help("configure your system git config instead of the current repo"),
+        ],
+    );
+    config.add_exclusive(
+        true,
+        vec![
+            Action::constant(&["--enable"], "config_func", Value::from("enable")).help(enable_help),
+            Action::constant(&["--disable"], "config_func", Value::from("disable"))
+                .help(disable_help),
+        ],
+    );
+    config
 }
 
 pub fn add_diff_cli_args(parser: &mut Parser) {
@@ -177,6 +314,20 @@ pub fn apply_config(
             let _ = diff_config.set_ignores(&ignores);
         }
         Some(other) => bail!("invalid Ignore configuration: {other:?}"),
+    }
+    Ok(())
+}
+
+/// [`apply_config`] for a parser and the parsers of its subcommands: each is a
+/// `ConfigBackedParser` upstream, with the same entry point name.
+pub fn apply_config_tree(
+    ctx: &Context,
+    parser: &mut Parser,
+    diff_config: &mut NotebookDiffConfig,
+) -> Result<()> {
+    apply_config(ctx, parser, diff_config)?;
+    for sub in parser.subparsers_mut() {
+        apply_config(ctx, sub, diff_config)?;
     }
     Ok(())
 }
@@ -417,6 +568,15 @@ pub fn parse_command_line(
 ) -> Parsed {
     match parser.parse_args(args) {
         Ok(ns) => Parsed::Namespace(ns),
+        Err(ParseError::Done {
+            stdout,
+            stderr,
+            code,
+        }) => Parsed::Exit {
+            stdout,
+            stderr,
+            code,
+        },
         Err(ParseError::Usage(message)) => Parsed::Exit {
             stdout: String::new(),
             stderr: parser.error_text(&message),
@@ -450,6 +610,50 @@ pub fn parse_command_line(
             },
         },
     }
+}
+
+/// `sys.exit(code)`: what a parser raises to end the program after printing help, the version
+/// or a usage error. Unlike a status that a command returns, it ends the callers as well.
+#[derive(Debug)]
+pub struct SystemExit(pub i32);
+
+impl std::fmt::Display for SystemExit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "exit status {}", self.0)
+    }
+}
+
+impl std::error::Error for SystemExit {}
+
+/// Parses `args`, or prints what the parser says (usage error, help, version) and returns the
+/// exit status to end with.
+pub fn parse_or_exit(
+    ctx: &Context,
+    parser: &Parser,
+    args: &[String],
+    out: &mut dyn std::io::Write,
+) -> Result<std::result::Result<Namespace, i32>> {
+    match parse_command_line(ctx, parser, args, crate::VERSION, &parser.prog) {
+        Parsed::Namespace(ns) => Ok(Ok(ns)),
+        Parsed::Exit {
+            stdout,
+            stderr,
+            code,
+        } => {
+            out.write_all(stdout.as_bytes())?;
+            out.flush()?;
+            crate::osstr::eprint(&stderr);
+            Ok(Err(code))
+        }
+    }
+}
+
+/// What the commands that launch the web interface say: they are not part of nbdime-rs (F-029).
+pub fn not_provided(command: &str) -> i32 {
+    crate::osstr::eprint(&format!(
+        "nbdime-rs does not provide the '{command}' command yet.\n"
+    ));
+    1
 }
 
 #[cfg(test)]

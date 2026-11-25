@@ -1,6 +1,7 @@
 //! Library half of the nbdime-rs command line tools.
 
 pub mod argparse;
+mod argparse_help;
 pub mod args;
 pub mod config;
 pub mod dev;

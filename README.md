@@ -142,12 +142,9 @@ decision, in [docs/findings.md](docs/findings.md). The ones a user might notice:
 
 ## Known issues
 
-- Diffs whose only change is a large added value, such as a new image-heavy notebook against an
-  empty one, are about as fast as upstream rather than faster. JSON string output and base64
-  detection are the hot spots.
-- Line alignment inside a cell grows faster than quadratically. Re-indenting a 1,000-line cell
-  takes minutes, though upstream is about 75 times slower still. A fix that keeps parity is
-  planned.
+- Line alignment of a long cell without cell ids is quadratic in its characters: the first
+  `difflib` search over both sources is the one upstream does too. Re-indenting a 1,000-line
+  cell takes about 0.2 s (upstream: 27 s at 250 lines, growing with the cube).
 
 ## Repository layout
 

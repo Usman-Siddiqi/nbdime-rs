@@ -149,8 +149,12 @@ impl Value {
     /// containers the comparison short-circuits on object identity, and CPython's `json` returns
     /// one shared `NaN` object: `[NaN] == [NaN]` and `{"x": NaN} == {"x": NaN}` hold, at every
     /// nesting level.
+    #[inline]
     pub fn py_eq(&self, other: &Value) -> bool {
-        self.eq_with(other, false)
+        match (self, other) {
+            (Value::Str(a), Value::Str(b)) => a == b,
+            _ => self.eq_with(other, false),
+        }
     }
 
     /// Python equality of two items of a container: `PyObject_RichCompareBool`, which treats a

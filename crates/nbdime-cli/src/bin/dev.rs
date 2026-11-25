@@ -41,8 +41,8 @@ fn run_batch() -> Result<()> {
                     request.get("id").cloned().unwrap_or(Value::Null),
                 );
                 let name = request.get("fn").and_then(Value::as_str).unwrap_or("");
-                let args = request.get("args").cloned().unwrap_or(Value::Null);
-                let outcome = std::panic::catch_unwind(|| dev::dispatch(name, &args))
+                let args = request.get("args").unwrap_or(&Value::Null);
+                let outcome = std::panic::catch_unwind(|| dev::dispatch(name, args))
                     .unwrap_or_else(|panic| {
                         Err(anyhow::anyhow!("panic: {}", panic_message(&panic)))
                     });

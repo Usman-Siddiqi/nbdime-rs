@@ -24,6 +24,22 @@ path = "src/bin/nbdiff.rs"
 name = "nbmerge"
 path = "src/bin/nbmerge.rs"
 
+[[bin]]
+name = "git-nbdiffdriver"
+path = "src/bin/git-nbdiffdriver.rs"
+
+[[bin]]
+name = "git-nbmergedriver"
+path = "src/bin/git-nbmergedriver.rs"
+
+[[bin]]
+name = "git-nbdifftool"
+path = "src/bin/git-nbdifftool.rs"
+
+[[bin]]
+name = "git-nbmergetool"
+path = "src/bin/git-nbmergetool.rs"
+
 [dependencies]
 nbdime-core.workspace = true
 anyhow.workspace = true

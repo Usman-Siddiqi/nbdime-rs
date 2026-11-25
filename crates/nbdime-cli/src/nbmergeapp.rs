@@ -112,7 +112,7 @@ fn display_value(value: &Value) -> String {
     }
 }
 
-fn main_merge(
+pub(crate) fn main_merge(
     ns: &mut Namespace,
     diff_config: &mut NotebookDiffConfig,
     logger: &Logger,
@@ -212,7 +212,7 @@ fn main_merge(
 
 /// `nbformat.write(notebook, path)`: the text is made before the file is opened, so a notebook
 /// that cannot be serialized leaves an existing file alone.
-fn write_notebook(path: &str, notebook: &Value) -> Result<()> {
+pub(crate) fn write_notebook(path: &str, notebook: &Value) -> Result<()> {
     let text = nbformat::writes(notebook)?;
     let mut file = fs::File::create(osstr::to_path(path))
         .with_context(|| format!("opening {}", osstr::show(path)))?;

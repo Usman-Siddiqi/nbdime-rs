@@ -60,12 +60,15 @@ pub fn run(ctx: &Context, prog: &str, args: &[String], out: &mut dyn Write) -> R
             return Ok(code);
         }
     };
-    main_diff(&mut ns, &mut diff_config, out)
+    main_diff(&mut ns, &mut diff_config, None, out)
 }
 
-fn main_diff(
+/// `main_diff(args)`. `filtered_remote` replaces the remote file of the command line with a
+/// notebook that has been read already (the diff driver's `--use-filter`).
+pub(crate) fn main_diff(
     ns: &mut Namespace,
     diff_config: &mut NotebookDiffConfig,
+    filtered_remote: Option<Source>,
     out: &mut dyn Write,
 ) -> Result<i32> {
     let output = match ns.get("out") {
@@ -80,6 +83,21 @@ fn main_diff(
     process_diff_flags(ns, diff_config)?;
     let (base, remote, paths) = resolve_diff_args(ns)?;
 
+    let source = |s: Option<String>| s.map_or(Source::Nothing, Source::Path);
+    if let Some(stream) = filtered_remote {
+        if is_gitref(base.as_deref())? {
+            // `os.path.exists` of a file object.
+            bail!("stat: path should be string, bytes, os.PathLike or integer, not NamedStringIO");
+        }
+        return handle_diff(
+            source(base),
+            stream,
+            output.as_deref(),
+            ns,
+            diff_config,
+            out,
+        );
+    }
     if is_gitref(base.as_deref())? && is_gitref(remote.as_deref())? {
         return changed_notebooks(
             base.as_deref(),
@@ -88,7 +106,6 @@ fn main_diff(
             |a, b| handle_diff(a, b, output.as_deref(), ns, diff_config, out),
         );
     }
-    let source = |s: Option<String>| s.map_or(Source::Nothing, Source::Path);
     handle_diff(
         source(base),
         source(remote),

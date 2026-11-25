@@ -58,7 +58,10 @@ fn assertion_holds(assertion: Assertion, text: &str, pos: usize) -> bool {
             pos == text.len() || (pos + 1 == text.len() && bytes[pos] == b'\n')
         }
         Assertion::WordBoundary => word_before(text, pos) != word_at(text, pos),
-        Assertion::NotWordBoundary => word_before(text, pos) == word_at(text, pos),
+        // Python 3.13's \B requires a nonempty subject.
+        Assertion::NotWordBoundary => {
+            !text.is_empty() && word_before(text, pos) == word_at(text, pos)
+        }
     }
 }
 

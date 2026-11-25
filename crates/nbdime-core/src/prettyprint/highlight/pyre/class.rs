@@ -64,6 +64,10 @@ pub(super) struct CharClass {
 }
 
 fn simple_lower(c: char) -> char {
+    // CPython re uses the simple lowercase mapping for dotted capital I.
+    if c == '\u{130}' {
+        return 'i';
+    }
     let mut lower = c.to_lowercase();
     match (lower.next(), lower.next()) {
         (Some(l), None) => l,

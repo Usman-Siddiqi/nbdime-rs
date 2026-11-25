@@ -46,7 +46,10 @@ pub fn build_parser(prog: &str) -> Parser {
             "show/ignore details not covered by other options.",
         ),
     ] {
-        parser.add(Action::ignorable(&options, dest).help(help));
+        parser.add(Action::ignorable(&options, dest).help(help).group(
+            "ignorables",
+            "Set which parts of the notebook (not) to show.",
+        ));
     }
     parser
 }

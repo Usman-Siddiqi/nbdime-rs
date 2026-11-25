@@ -524,6 +524,38 @@ doubled final newline, and a common last line that is repeated after the conflic
   traceback with exit status 1, not a usage error with status 2; reproduced (exit 1, message on
   stderr). With `--config` the same conflict is raised by the parser and is a usage error (exit 2).
 
+### F-032: nbshow highlighting and reading (U08)
+- **Lexers.** nbshow always highlights: Markdown cells with `MarkdownLexer`, code cells with the lexer
+  named by `language_info.pygments_lexer`, else `language_info.name`, through
+  `find_lexer_class_by_name` and `Terminal256Formatter` (default style). Ported exactly, with
+  Pygments' regex-lexer machinery (states, `bygroups`, `using(this)`, `include`, `default`,
+  `words` via `regex_opt`, `combined`) and a backtracking engine with Python `re` semantics
+  (`prettyprint/highlight/pyre`): `PythonLexer` (aliases `python py sage python3 py3 bazel
+  starlark pyi`; note the spec's "sanic" is `sage` in Pygments 2.21) and `MarkdownLexer` (`markdown
+  md`), including Python code in fenced Markdown blocks. Verified token-for-token (byte-identical
+  terminal output) against Pygments on 3,000 stdlib and site-packages Python files and 1,497
+  Markdown files.
+- **Decision**: IPython lexers (`ipython`, `ipython3`, ...) are plugin lexers, registered only when
+  IPython is installed. A plain `pip install nbdime` and the oracle venv have none, so such
+  notebooks print unhighlighted source, as upstream does there (and as we do).
+- **Deviation**: every other name in Pygments' built-in lexer table (all 927 aliases of
+  `LEXER_ALIASES` except the Python and Markdown ones above, for example `python2`, `pycon`,
+  `cython`, `bash`, `json`, `rust`, `julia`, `r`) prints its source unhighlighted; upstream would
+  highlight. In a fenced Markdown block with such a language the code is left unstyled (upstream:
+  that lexer's tokens). Names Pygments does not know behave as upstream (source unchanged; fenced
+  code is a string token). Previously nbdiff failed on fenced code of any known language; it now
+  degrades the same way.
+- **Unknown notebook keys** print as `unknown keys: {'a', 'b'}` with the names sorted; upstream
+  prints a Python `set`, whose order varies between runs.
+- **nbshow parsing**: `process_exclusive_ignorables` is called with five names (not `id`), so
+  `-i/-I` never conflicts with the other flags, and `id` stays unset (falsy), which only matters
+  to diff filtering.
+- **v3 notebooks (amends F-012)**: the parity suite feeds nbshow a v3 notebook with no worksheets,
+  which upstream upgrades to 4.5 with `orig_nbformat: 3` in the metadata. `nbformat::reads` now does
+  that upgrade for v3 notebooks whose `worksheets` is an empty list (no cell conversion, no random
+  ids involved); every other v3 notebook is still rejected, as the U02 suite requires. The two
+  suites disagree otherwise: test_u02_nbformat expects any v3 to be rejected.
+
 ## Open questions
 
 - **Q-001** (decided): deterministic ids, see F-003.

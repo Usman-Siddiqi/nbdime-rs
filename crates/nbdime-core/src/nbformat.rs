@@ -12,6 +12,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::json::{self, DumpOptions, ParseError};
+use crate::log::{self, Level};
 use crate::py::splitlines_keepends;
 use crate::value::{Int, Map, Value};
 
@@ -442,10 +443,18 @@ fn repair_ids(cells: &mut [Value], writing: bool) -> Result<(), NbformatError> {
         let Value::Object(cell) = &mut cells[index] else {
             continue;
         };
-        let Some((position, _, _)) = cell.shift_remove_full("id") else {
+        let Some((position, _, previous)) = cell.shift_remove_full("id") else {
             continue;
         };
         let id = ids.generate(&cells[index]);
+        if let (true, Value::Str(previous)) = (writing, previous) {
+            log::emit(
+                Level::Warning,
+                "warnings",
+                110,
+                format!("nbformat/validator.py:434: DuplicateCellId: Non-unique cell id '{previous}' detected. Corrected to '{id}'.\n  _validate(nbdict, ref, version, version_minor, relax_add_props)\n"),
+            );
+        }
         if let Value::Object(cell) = &mut cells[index] {
             cell.shift_insert(position, "id".into(), Value::Str(id));
         }

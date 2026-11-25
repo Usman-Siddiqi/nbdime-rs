@@ -195,17 +195,23 @@ pub(crate) fn main_merge(
         } else {
             log_decisions(&b, &decisions, ns, logger, 70)?;
         }
-    } else if let Some(mfn) = &mfn {
-        write_notebook(mfn, &merged)?;
-        logger.log(
-            Level::Info,
-            "nbmergeapp",
-            74,
-            &format!("Merge result written to {}", osstr::show(mfn)),
-        );
     } else {
-        out.write_all(nbformat::writes(&merged)?.as_bytes())?;
-        out.flush()?;
+        log::begin();
+        let text = nbformat::writes(&merged);
+        logger.log_records(&log::take());
+        let text = text?;
+        if let Some(mfn) = &mfn {
+            write_notebook_text(mfn, &text)?;
+            logger.log(
+                Level::Info,
+                "nbmergeapp",
+                74,
+                &format!("Merge result written to {}", osstr::show(mfn)),
+            );
+        } else {
+            out.write_all(text.as_bytes())?;
+            out.flush()?;
+        }
     }
     Ok(returncode)
 }
@@ -213,7 +219,10 @@ pub(crate) fn main_merge(
 /// `nbformat.write(notebook, path)`: the text is made before the file is opened, so a notebook
 /// that cannot be serialized leaves an existing file alone.
 pub(crate) fn write_notebook(path: &str, notebook: &Value) -> Result<()> {
-    let text = nbformat::writes(notebook)?;
+    write_notebook_text(path, &nbformat::writes(notebook)?)
+}
+
+fn write_notebook_text(path: &str, text: &str) -> Result<()> {
     let mut file = fs::File::create(osstr::to_path(path))
         .with_context(|| format!("opening {}", osstr::show(path)))?;
     file.write_all(text.as_bytes())?;

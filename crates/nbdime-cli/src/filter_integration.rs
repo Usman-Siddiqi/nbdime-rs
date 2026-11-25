@@ -20,11 +20,11 @@ pub fn interrogate_filter(path: &str) -> Result<Option<String>> {
     if !output.status.success() {
         return Ok(None);
     }
-    let parts: Vec<String> = output
+    let parts: Vec<_> = output
         .stdout
         .split(|b| *b == 0)
         .take(3)
-        .map(osstr::from_bytes)
+        .map(String::from_utf8_lossy)
         .collect();
     // Older git lacks `-z` and its output does not split into three parts.
     let [path_list, attr, info] = parts.as_slice() else {
@@ -36,7 +36,7 @@ pub fn interrogate_filter(path: &str) -> Result<Option<String>> {
              started with \"{path_list}\\0{attr}\""
         );
     }
-    Ok(match info.as_str() {
+    Ok(match info.as_ref() {
         "" | "unspecified" | "set" | "unset" => None,
         other => Some(other.to_owned()),
     })
@@ -47,6 +47,7 @@ pub fn get_clean_filter_cmd(filter_attr: &str) -> Result<Option<String>> {
     let output = Command::new("git")
         .args(["config", "--get", "-z"])
         .arg(format!("filter.{filter_attr}.clean"))
+        .stderr(Stdio::inherit())
         .output()
         .context("running git")?;
     if !output.status.success() {
@@ -71,6 +72,9 @@ pub(crate) fn filtered(git_path: &str, path: &str) -> Result<Option<Source>> {
     };
     let input = fs::File::open(osstr::to_path(path))
         .with_context(|| format!("opening {}", osstr::show(path)))?;
+    if input.metadata()?.is_dir() {
+        bail!("opening {}: Is a directory", osstr::show(path));
+    }
     // `shell=True` runs `/bin/sh`, whatever `sh` the PATH offers.
     let output = Command::new("/bin/sh")
         .arg("-c")

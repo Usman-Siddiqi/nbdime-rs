@@ -9,6 +9,7 @@ pub mod gitfiles;
 pub mod logging;
 pub mod nbdiffapp;
 pub mod nbmergeapp;
+pub mod nbshowapp;
 pub mod osstr;
 pub mod pathexpand;
 pub mod revparse;
@@ -99,6 +100,10 @@ pub fn nbdiff_main() -> i32 {
 
 pub fn nbmerge_main() -> i32 {
     run(nbmergeapp::main)
+}
+
+pub fn nbshow_main() -> i32 {
+    run(nbshowapp::main)
 }
 
 pub fn nbdime_main() -> i32 {

@@ -24,6 +24,10 @@ path = "src/bin/nbdiff.rs"
 name = "nbmerge"
 path = "src/bin/nbmerge.rs"
 
+[[bin]]
+name = "nbshow"
+path = "src/bin/nbshow.rs"
+
 [dependencies]
 nbdime-core.workspace = true
 anyhow.workspace = true

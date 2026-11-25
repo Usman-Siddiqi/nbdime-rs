@@ -5,7 +5,8 @@ Run with the oracle interpreter (Python 3.13, Unicode 15.1, Pygments installed):
 
     /home/claude/ref/venv/bin/python scripts/gen_prettyprint_tables.py
 
-The tables are what `repr(str)`, `re`'s `\\s` and `\\w`, and Pygments' `get_lexer_by_name` use.
+The tables are what `repr(str)`, `re`'s `\\s`, `\\w` and `\\d`, Pygments' `get_lexer_by_name` and
+the identifier classes of Pygments' Python lexer use.
 """
 
 import re
@@ -51,7 +52,12 @@ def main():
     if unicodedata.unidata_version != "15.1.0":
         sys.exit(f"expected Unicode 15.1.0, got {unicodedata.unidata_version}")
     word = re.compile(r"\w")
+    digit = re.compile(r"\d")
+    from pygments import unistring
     from pygments.lexers import LEXERS
+
+    xid_start = re.compile("[" + unistring.xid_start + "]")
+    xid_continue = re.compile("[" + unistring.xid_continue + "]")
 
     aliases = sorted({a for entry in LEXERS.values() for a in entry[2]})
     parts = [
@@ -69,6 +75,15 @@ def main():
         "",
         emit("WORD", "Code points that `re`'s `\\w` matches in a `str` pattern.",
              ranges(lambda cp: word.match(chr(cp)) is not None)),
+        "",
+        emit("DIGIT", "Code points that `re`'s `\\d` matches in a `str` pattern.",
+             ranges(lambda cp: digit.match(chr(cp)) is not None)),
+        "",
+        emit("XID_START", "Code points of `pygments.unistring.xid_start`.",
+             ranges(lambda cp: xid_start.match(chr(cp)) is not None)),
+        "",
+        emit("XID_CONTINUE", "Code points of `pygments.unistring.xid_continue`.",
+             ranges(lambda cp: xid_continue.match(chr(cp)) is not None)),
         "",
         "/// Aliases of the lexers that `pygments.lexers.get_lexer_by_name` knows, sorted.",
         "#[rustfmt::skip]",

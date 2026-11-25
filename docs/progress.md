@@ -107,3 +107,47 @@ context intact.
   image notebooks.
 - Line alignment grows faster than quadratic: dedenting a 1,000-line cell takes 150 s (upstream
   is ~75x slower still). Needs an algorithmic look that keeps parity.
+
+## Phase 4 performance unit P4 (2026-11-25)
+
+### Done
+All output unchanged (gate with every enabled suite, plus U04 and U10 at `PARITY_SCALE=2
+PARITY_SEED=3`). "Before" is `0043ca0` built from a clean export; instruction counts are
+callgrind totals for one `nbdiff` run, wall times best of 3 (`bench/micro.py`, `bench/run.py`;
+the machine was shared with other builds, so prefer the instruction counts).
+
+| Case | Before | After |
+|---|---|---|
+| one 1,000-line cell re-indented, no ids, generated statements | 2.21 s | 0.21 s |
+| the same, one statement repeated, 250 / 500 / 1,000 lines | 0.64 / 4.14 / 35.4 s | 0.015 / 0.048 / 0.19 s |
+| empty vs 100 cells with a 200 kB PNG each, `--out` | 1,038 M instr, 0.14 s | 241 M instr, 0.10 s |
+| that notebook vs an identical copy | 1,108 M instr, 0.20 s | 286 M instr, 0.10 s |
+| `bench/run.py` 1,600 cells, ids | 551 M instr, 0.196 s | 288 M instr, 0.171 s |
+| `bench/run.py` 1,600 cells, no ids | 1,753 M instr, 0.548 s | 917 M instr, 0.292 s |
+| `bench/run.py` 3,000 cells, ids / no ids | 0.447 / 1.516 s | 0.343 / 0.706 s |
+
+Upstream (`nbdiff` 4.0.4) on the same micro cases: 1.47 s (image add), 1.91 s (identical images),
+26.7 s (repeated statement, 250 lines).
+
+- Re-indented cells (target 3): the cubic cost was `SequenceMatcher` on whole cell sources in the
+  cell predicates (no cell ids), not the line alignment; fixed with an exact per-row bound in
+  `get_matching_blocks`, F-045.
+- JSON strings are scanned eight bytes at a time when parsing and dumping (`json/scan.rs`):
+  `write_string` from ~37 to ~4.6 instructions per byte, `parse_string` from ~22 to ~3.6.
+  `diff_into_value` moves a diff into its JSON form for `nbdiff --out` and the dev tool, and the
+  dev tool no longer copies its arguments. Values are still copied from the notebook into the
+  diff (owned `Value`s in `DiffEntry`); borrowing would need a lifetime on the diff types and the
+  copy is now a few percent of the image case (memcpy), so it was left.
+- `is_base64` scans bytes with a fallback to characters at the first non-ASCII byte, and is not
+  called at all for equal MIME strings (F-046).
+- Bench profile (target 4): bit-parallel LCS table, `quick_ratio` from character counts, cell ids
+  compared by hash first, string fast path in `py_eq` (F-046).
+- New `bench/micro.py` for the targeted cases; results in `bench/results/2026-11-25-*.json`.
+
+### Next steps
+- What remains of a long re-indented cell is the first, full `find_longest_match` over both
+  sources, quadratic in characters (about 0.2 s at 1,000 lines, 2 s at 3,000). A suffix automaton
+  of `b[blo..bhi]` per large rectangle finds the same match (longest, then earliest in `a`, then
+  earliest `firstpos` in `b`) in linear time and also gives the per-row maxima the bound needs.
+- No-ids bench profile: `is_similar` (strict cell predicate over all pairs) ~30%, the
+  `Predicate::apply` dispatch per pair ~13%.

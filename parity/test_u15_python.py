@@ -49,7 +49,7 @@ def test_u15_suites_through_the_python_api(ext, tmp_path):
     wrapper.chmod(0o755)
     env = dict(os.environ, NBDIME_RS_DEV=str(wrapper), NBDIME_RS_PYEXT_STATS=str(stats),
                PYTHONPATH=str(pkg) + os.pathsep + os.environ.get("PYTHONPATH", ""))
-    p = subprocess.run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider"] + SUITES,
+    p = subprocess.run([sys.executable, "-m", "pytest", "-p", "no:cacheprovider"] + SUITES,
                        cwd=ROOT / "parity", env=env, capture_output=True, text=True)
     assert p.returncode == 0, p.stdout[-6000:] + p.stderr[-2000:]
     assert " passed" in p.stdout and " skipped" not in p.stdout, p.stdout[-2000:]
@@ -73,13 +73,16 @@ def test_u15_conversion_round_trip(ext):
     _, m = ext
     values = [None, True, False, 0, -1, 2**63, -(2**80), 10**400, 1.5, -0.0, 1e308, "", "é\U0001F600",
               [], {}, {"b": 1, "a": [1, 2.0, True, None]}, [[[]]], {"": {"x": "y"}}]
+    # patch() itself only takes dict, list or str (as upstream), so scalars travel inside a dict.
     for v in values:
-        out = m.patch(v, [])
+        out = m.patch({"v": v}, [])["v"]
         assert json.dumps(out) == json.dumps(v)
         assert type(out) is type(v)
     for v in (float("inf"), float("-inf")):
-        assert m.patch(v, []) == v
-    assert math.isnan(m.patch(float("nan"), []))
+        assert m.patch({"v": v}, [])["v"] == v
+    assert math.isnan(m.patch({"v": float("nan")}, [])["v"])
+    with pytest.raises(m.EngineError):
+        m.patch(None, [])
     # Key order of dicts is kept, bool stays bool, int stays int.
     out = m.patch({"z": 1, "a": True, "m": 1.0}, [])
     assert list(out) == ["z", "a", "m"]
@@ -100,8 +103,8 @@ def test_u15_engine_errors(ext):
     _, m = ext
     with pytest.raises(m.EngineError):
         m.patch({"a": 1}, [{"op": "patch", "key": "missing", "diff": []}])
-    with pytest.raises((m.EngineError, ValueError, TypeError)):
-        m.diff_notebooks({"cells": "nope"}, {"cells": []})
+    with pytest.raises(m.EngineError):
+        m.decide_merge("", "", "")  # an AssertionError upstream
     with pytest.raises(TypeError):
         m.diff(1)
 

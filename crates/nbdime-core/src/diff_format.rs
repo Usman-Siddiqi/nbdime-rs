@@ -328,35 +328,53 @@ pub fn diff_to_value(diff: &[DiffEntry]) -> Value {
     Value::List(diff.iter().map(entry_to_value).collect())
 }
 
+/// [`diff_to_value`] for a diff that is no longer needed, which moves the values instead of
+/// copying them.
+pub fn diff_into_value(diff: Diff) -> Value {
+    Value::List(diff.into_iter().map(entry_into_value).collect())
+}
+
 pub fn entry_to_value(e: &DiffEntry) -> Value {
+    let payload = match &e.op {
+        Op::Add { value } | Op::Replace { value } => Some(("value", value.clone())),
+        Op::AddRange { valuelist } => Some(("valuelist", valuelist.clone())),
+        Op::RemoveRange { length } => Some(("length", Value::from(*length))),
+        Op::Patch { diff } => Some(("diff", diff_to_value(diff))),
+        Op::Remove | Op::ParentDeleted => None,
+    };
+    entry_object(&e.key, &e.op, payload)
+}
+
+fn entry_into_value(e: DiffEntry) -> Value {
+    let DiffEntry { key, mut op } = e;
+    let payload = match &mut op {
+        Op::Add { value } | Op::Replace { value } => Some(("value", std::mem::take(value))),
+        Op::AddRange { valuelist } => Some(("valuelist", std::mem::take(valuelist))),
+        Op::RemoveRange { length } => Some(("length", Value::from(*length))),
+        Op::Patch { diff } => Some(("diff", diff_into_value(std::mem::take(diff)))),
+        Op::Remove | Op::ParentDeleted => None,
+    };
+    entry_object(&key, &op, payload)
+}
+
+/// The JSON object of an entry: `op`'s name, the key and the payload field, if any.
+fn entry_object(key: &Key, op: &Op, payload: Option<(&str, Value)>) -> Value {
     let mut m = Map::with_capacity(3);
-    let op = Value::from(e.op.name());
-    let key = match &e.key {
+    let name = Value::from(op.name());
+    let key = match key {
         Key::Index(i) => Value::from(*i),
         Key::Name(s) => Value::from(s.as_str()),
     };
-    if matches!(e.op, Op::ParentDeleted) {
+    if matches!(op, Op::ParentDeleted) {
         // Upstream builds this entry as `DiffEntry(key=..., op=...)`.
         m.insert("key".into(), key);
-        m.insert("op".into(), op);
+        m.insert("op".into(), name);
     } else {
-        m.insert("op".into(), op);
+        m.insert("op".into(), name);
         m.insert("key".into(), key);
     }
-    match &e.op {
-        Op::Add { value } | Op::Replace { value } => {
-            m.insert("value".into(), value.clone());
-        }
-        Op::Remove | Op::ParentDeleted => {}
-        Op::AddRange { valuelist } => {
-            m.insert("valuelist".into(), valuelist.clone());
-        }
-        Op::RemoveRange { length } => {
-            m.insert("length".into(), Value::from(*length));
-        }
-        Op::Patch { diff } => {
-            m.insert("diff".into(), diff_to_value(diff));
-        }
+    if let Some((field, value)) = payload {
+        m.insert(field.into(), value);
     }
     Value::Object(m)
 }
@@ -414,6 +432,33 @@ pub fn entry_from_value(v: &Value) -> Result<DiffEntry, DiffFormatError> {
 mod tests {
     use super::*;
     use crate::json::{dumps, parse, DumpOptions};
+
+    #[test]
+    fn moving_a_diff_into_its_json_form_gives_the_same_value_as_copying() {
+        let diff = vec![
+            DiffEntry::add("a", Value::from(1)),
+            DiffEntry::remove("b"),
+            DiffEntry::replace("c", Value::List(vec![Value::Null])),
+            DiffEntry::patch(
+                "d",
+                vec![
+                    DiffEntry::addrange(0, Value::from("xy")),
+                    DiffEntry::removerange(3, 2),
+                    DiffEntry::patch(5, vec![DiffEntry::add("e", Value::Bool(true))]),
+                ],
+            ),
+            DiffEntry {
+                key: Key::Name("f".into()),
+                op: Op::ParentDeleted,
+            },
+        ];
+        let copied = diff_to_value(&diff);
+        assert_eq!(diff_into_value(diff), copied);
+        assert_eq!(
+            dumps(&copied, &DumpOptions::compact()),
+            r#"[{"op":"add","key":"a","value":1},{"op":"remove","key":"b"},{"op":"replace","key":"c","value":[null]},{"op":"patch","key":"d","diff":[{"op":"addrange","key":0,"valuelist":"xy"},{"op":"removerange","key":3,"length":2},{"op":"patch","key":5,"diff":[{"op":"add","key":"e","value":true}]}]},{"key":"f","op":"parent_deleted"}]"#
+        );
+    }
 
     #[test]
     fn sequence_builder_orders_addrange_first() {

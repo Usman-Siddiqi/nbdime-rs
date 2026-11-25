@@ -17,6 +17,7 @@ pub mod mergetool;
 pub mod nbdiffapp;
 pub mod nbmergeapp;
 pub mod nbpatchapp;
+pub mod nbshowapp;
 pub mod osstr;
 pub mod pathexpand;
 pub mod revparse;
@@ -114,6 +115,10 @@ pub fn nbmerge_main() -> i32 {
 
 pub fn nbpatch_main() -> i32 {
     run(nbpatchapp::main)
+}
+
+pub fn nbshow_main() -> i32 {
+    run(nbshowapp::main)
 }
 
 pub fn nbdime_main() -> i32 {

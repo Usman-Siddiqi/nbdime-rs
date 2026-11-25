@@ -4,7 +4,7 @@ use std::fs;
 use std::io::Write;
 
 use anyhow::{bail, Context as _, Result};
-use nbdime_core::diff_format::diff_to_value;
+use nbdime_core::diff_format::diff_into_value;
 use nbdime_core::diffing::{diff_notebooks, NotebookDiffConfig};
 use nbdime_core::json::{self, DumpOptions};
 use nbdime_core::prettyprint::Printer;
@@ -145,7 +145,7 @@ fn handle_diff(
         // Opened (and truncated) before anything is written, like `open(output, "w")`.
         let mut file = fs::File::create(osstr::to_path(output))
             .with_context(|| format!("opening {}", osstr::show(output)))?;
-        let text = json::dumps(&diff_to_value(&diff), &DumpOptions::nbdime_diff_file());
+        let text = json::dumps(&diff_into_value(diff), &DumpOptions::nbdime_diff_file());
         file.write_all(text.as_bytes())?;
     } else {
         let config = prettyprint_config(ns);

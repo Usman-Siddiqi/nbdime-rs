@@ -3,13 +3,12 @@
 use std::fs;
 use std::io::Write;
 
-use anyhow::{anyhow, bail, Context as _, Result};
+use anyhow::{anyhow, Context as _, Result};
 use nbdime_core::diff_format::diff_from_value;
 use nbdime_core::diffing::NotebookDiffConfig;
 use nbdime_core::json;
 use nbdime_core::patch::patch_notebook;
-use nbdime_core::prettyprint::{repr_str, PrettyPrintConfig, Printer};
-use nbdime_core::value::Int;
+use nbdime_core::prettyprint::{PrettyPrintConfig, Printer};
 use nbdime_core::Value;
 
 use crate::argparse::{Action, Parser};
@@ -75,7 +74,7 @@ pub fn run(ctx: &Context, prog: &str, args: &[String], out: &mut dyn Write) -> R
         None => {
             let config = PrettyPrintConfig::default();
             let mut text = String::new();
-            let result = pretty_print_notebook(&mut Printer::new(&config, &mut text), &after);
+            let result = Printer::new(&config, &mut text).notebook(&after);
             // Upstream prints as it goes, so what was printed before an error still appears.
             out.write_all(text.as_bytes())?;
             out.flush()?;
@@ -83,54 +82,6 @@ pub fn run(ctx: &Context, prog: &str, args: &[String], out: &mut dyn Write) -> R
         }
     }
     Ok(0)
-}
-
-/// `%d` of a notebook format number.
-fn format_number(value: Option<&Value>, name: &str) -> Result<String> {
-    match value {
-        Some(Value::Int(Int::Small(n))) => Ok(n.to_string()),
-        Some(Value::Bool(b)) => Ok(i32::from(*b).to_string()),
-        Some(Value::Float(f)) if f.is_finite() => Ok(format!("{}", f.trunc())),
-        Some(other) => bail!("{name} must be a number, not {other:?}"),
-        None => bail!("notebook has no {name}"),
-    }
-}
-
-/// `pretty_print_notebook`: the notebook's format, unknown keys, metadata and cells.
-fn pretty_print_notebook(printer: &mut Printer, nb: &Value) -> Result<()> {
-    let Value::Object(map) = nb else {
-        bail!("a notebook must be a dict");
-    };
-    // Details are always on in the default configuration.
-    let version = format!(
-        "{}.{}",
-        format_number(map.get("nbformat"), "nbformat")?,
-        format_number(map.get("nbformat_minor"), "nbformat_minor")?
-    );
-    printer.key_value("notebook format", &version, "");
-
-    const KNOWN: [&str; 4] = ["nbformat", "nbformat_minor", "metadata", "cells"];
-    let unknown: Vec<String> = map
-        .keys()
-        .filter(|k| !KNOWN.contains(&k.as_str()))
-        .map(|k| repr_str(k))
-        .collect();
-    if !unknown.is_empty() {
-        // A set: the order of several keys is arbitrary upstream.
-        printer.key_value("unknown keys", &format!("{{{}}}", unknown.join(", ")), "");
-    }
-
-    let metadata = map
-        .get("metadata")
-        .ok_or_else(|| anyhow!("notebook has no metadata"))?;
-    printer.metadata(metadata, &["kernelspec", "language_info"], "")?;
-    let Some(Value::List(cells)) = map.get("cells") else {
-        bail!("notebook has no list of cells");
-    };
-    for (i, cell) in cells.iter().enumerate() {
-        printer.cell(Some(i), cell, "", false)?;
-    }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -195,18 +146,5 @@ mod tests {
             &mut Vec::new()
         )
         .is_err());
-    }
-
-    #[test]
-    fn unknown_keys_and_the_format_come_first() {
-        let nb = json::parse(
-            r#"{"nbformat": 4, "nbformat_minor": 5, "metadata": {}, "cells": [], "extra": 1}"#,
-        )
-        .unwrap();
-        let config = PrettyPrintConfig::default();
-        let mut text = String::new();
-        pretty_print_notebook(&mut Printer::new(&config, &mut text), &nb).unwrap();
-        assert!(text.ends_with("unknown keys: {'extra'}\n"), "{text:?}");
-        assert!(text.starts_with("notebook format: 4.5\n"));
     }
 }

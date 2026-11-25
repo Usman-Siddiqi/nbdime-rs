@@ -8,6 +8,8 @@
 //! exactly where upstream raises.
 
 use std::cell::OnceCell;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 
 use crate::diff_format::Op;
 use crate::value::{Map, Value};
@@ -32,15 +34,24 @@ pub(super) struct Item<'a> {
     value: &'a Value,
     /// `value["id"]` of an object that has one.
     id: Option<&'a Value>,
+    /// A hash of `id` when it is a string, so that most pairs of different ids are told apart
+    /// without comparing them.
+    id_hash: Option<u64>,
     cell: OnceCell<PreparedCell<'a>>,
     output: OnceCell<PreparedOutput<'a>>,
 }
 
 impl<'a> Item<'a> {
     pub(super) fn new(value: &'a Value) -> Self {
+        let id = value.get("id");
         Item {
             value,
-            id: value.get("id"),
+            id,
+            id_hash: id.and_then(Value::as_str).map(|id| {
+                let mut hasher = DefaultHasher::new();
+                id.hash(&mut hasher);
+                hasher.finish()
+            }),
             cell: OnceCell::new(),
             output: OnceCell::new(),
         }
@@ -242,31 +253,53 @@ fn is_base64(s: &str, len: usize) -> bool {
     if len < MIN_LEN {
         return false;
     }
-    // The pattern is case insensitive and Unicode aware, so `[a-z]` also takes the characters
-    // that fold to ASCII letters: dotted capital I, dotless i, long s and the Kelvin sign.
-    let is_digit = |c: char| {
-        c.is_ascii_alphanumeric()
-            || matches!(
-                c,
-                '+' | '/' | '\u{130}' | '\u{131}' | '\u{17f}' | '\u{212a}'
-            )
-    };
-    let (mut digits, mut padding) = (0usize, 0usize);
-    // `''.join(s.splitlines())` drops every line boundary.
-    let without_line_ends = s.chars().filter(|&c| !is_line_end(c));
-    for c in without_line_ends {
-        if padding == 0 && is_digit(c) {
-            digits += 1;
-        } else if c == '=' && padding < 2 {
-            padding += 1;
-        } else {
+    let mut scan = Base64Scan::default();
+    for (at, &byte) in s.as_bytes().iter().enumerate() {
+        if !byte.is_ascii() {
+            return s[at..].chars().all(|c| scan.step(c)) && scan.is_complete();
+        }
+        if !scan.step(char::from(byte)) {
             return false;
         }
     }
-    match padding {
-        0 => digits % 4 == 0,
-        1 => digits % 4 == 3,
-        _ => digits % 4 == 2,
+    scan.is_complete()
+}
+
+/// The state of matching `^(?:[a-z0-9+/]{4})*(?:[a-z0-9+/]{2}==|[a-z0-9+/]{3}=)?$` (case
+/// insensitive) against `''.join(s.splitlines())`, one character of `s` at a time.
+#[derive(Default)]
+struct Base64Scan {
+    digits: usize,
+    padding: usize,
+}
+
+impl Base64Scan {
+    /// Takes the next character; false once the text can no longer match.
+    #[inline]
+    fn step(&mut self, c: char) -> bool {
+        // The pattern is Unicode aware, so `[a-z]` also takes the characters that fold to ASCII
+        // letters: dotted capital I, dotless i, long s and the Kelvin sign.
+        let is_digit = c.is_ascii_alphanumeric()
+            || matches!(
+                c,
+                '+' | '/' | '\u{130}' | '\u{131}' | '\u{17f}' | '\u{212a}'
+            );
+        if self.padding == 0 && is_digit {
+            self.digits += 1;
+        } else if c == '=' && self.padding < 2 {
+            self.padding += 1;
+        } else if !is_line_end(c) {
+            return false;
+        }
+        true
+    }
+
+    fn is_complete(&self) -> bool {
+        match self.padding {
+            0 => self.digits % 4 == 0,
+            1 => self.digits % 4 == 3,
+            _ => self.digits % 4 == 2,
+        }
     }
 }
 
@@ -364,6 +397,10 @@ fn compare_mimedata(
         return compare_text(maxlen);
     }
     if let (Some(px), Some(py)) = (xe.text.as_ref(), ye.text.as_ref()) {
+        // Both the base64 and the text comparison accept equal strings.
+        if px.text() == py.text() {
+            return Ok(true);
+        }
         if xe.is_base64() {
             return Ok(px.len() == py.len() && px.text() == py.text());
         }
@@ -553,8 +590,14 @@ pub(super) fn compare_cell_strict(x: &Item<'_>, y: &Item<'_>) -> Result<bool, Di
     Ok(true)
 }
 
+#[inline]
 pub(super) fn compare_cell_by_ids(x: &Item<'_>, y: &Item<'_>) -> Result<bool, DiffError> {
     if x.value.is_object() && y.value.is_object() {
+        if let (Some(hx), Some(hy)) = (x.id_hash, y.id_hash) {
+            if hx != hy {
+                return Ok(false);
+            }
+        }
         return Ok(matches!((x.id, y.id), (Some(a), Some(b)) if a.py_eq(b)));
     }
     // Cells that are no objects: `'id' in x and 'id' in y and x['id'] == y['id']`.

@@ -524,6 +524,38 @@ doubled final newline, and a common last line that is repeated after the conflic
   traceback with exit status 1, not a usage error with status 2; reproduced (exit 1, message on
   stderr). With `--config` the same conflict is raised by the parser and is a usage error (exit 2).
 
+### F-033: git integration and nbpatch decisions (U14)
+
+- **System-scope fallback bug (upstream)**: `locate_gitattributes("system")` falls back to
+  `os.path.join(['etc', 'gitattributes'])` when `git config --system -e` fails, which passes a
+  list and raises `TypeError`, so the fallback path never works upstream. Reproduction: with no
+  system git config file and `GIT_EDITOR` unusable, `git-nbdiffdriver config --enable --system`
+  exits 1 with a traceback. Reproduced (exit 1, the `TypeError` message on stderr) rather than
+  "fixed" to `/etc/gitattributes`, so the exit status matches; worth reporting upstream, which
+  needs the owner's approval (hard rule), so nothing has been filed.
+- **Exact `argparse` help and usage**: the git tools print `-h` and usage-error text through a port
+  of `argparse.HelpFormatter` and `textwrap` (`COLUMNS` honoured, default 80 minus 2), because the
+  suites compare stderr and stdout exactly. This is more than F-029 required; the other CLIs use
+  it too now.
+- **Sub-parsers**: `nargs=PARSER` swallows everything after the sub-command, so `merge
+  --log-level ERROR` is "unrecognized arguments" in upstream's merge driver; reproduced. A parser
+  exit inside `nbdime config-git` (help, usage error) ends the whole `or` chain with that status,
+  as `SystemExit` does; a command that merely returns non-zero stops the chain too.
+- **`nbpatch` without `--output`**: upstream validates the patched notebook against the schema
+  and, when it fails, prints "Patch result is not a valid notebook, printing as JSON:" and the
+  JSON. nbdime-rs has no schema validation (F-013), so it always pretty-prints. Deliberate
+  deviation, only for patches that produce a schema-invalid notebook.
+- **Highlighting in `nbpatch` output**: Python source highlighting comes from the U08 lexer. Until
+  it merges, the seven `nbpatch` cases that print a notebook, and the empty-patch case, differ from
+  upstream in colour codes only; with ANSI sequences stripped they are identical except one
+  case with U+2028 in a code cell, which sits on the same highlighting path (re-check after U08).
+- **`parity/upstream_shim.py`**: the shim makes every `main` return the exit status, but
+  upstream's `test_{diffdriver,difftool,mergedriver,mergetool}_config` call `main(['config',
+  '-h'])` inside `assert_clean_exit`, which needs `SystemExit`. They fail against any binary with
+  "DID NOT RAISE SystemExit". With a scratch copy of the shim that raises `SystemExit(code)` when
+  `-h` is in the arguments, every upstream test passes except `test_nbshow_app` (U08). The suite
+  is protected, so this is for the orchestrator.
+
 ## Open questions
 
 - **Q-001** (decided): deterministic ids, see F-003.

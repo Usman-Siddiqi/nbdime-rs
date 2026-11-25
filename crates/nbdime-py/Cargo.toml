@@ -1,0 +1,32 @@
+[package]
+name = "nbdime-py"
+description = "Python extension module nbdime_rs: the nbdime-rs diff and merge engine for Python"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+[lib]
+name = "nbdime_rs"
+crate-type = ["cdylib"]
+
+[features]
+default = ["extension-module"]
+# Leaves libpython unlinked, as an extension module must. Tests that embed an interpreter
+# need `--no-default-features`.
+extension-module = ["pyo3/extension-module"]
+
+[dependencies]
+nbdime-core.workspace = true
+indexmap.workspace = true
+pyo3 = { version = "0.27", features = ["abi3-py39"] }
+stacker = "0.1"
+
+[dev-dependencies]
+pyo3 = { version = "0.27", features = ["abi3-py39", "auto-initialize"] }
+
+[lints]
+workspace = true

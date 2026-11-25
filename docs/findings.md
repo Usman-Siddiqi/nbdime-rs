@@ -234,7 +234,7 @@ anything requires explicit approval from the project owner (see CLAUDE.md).
   500 levels, so we succeed slightly further; deliberate. The default configuration fits 500
   levels on a 2 MB stack in debug builds. A custom configuration with multilevel predicates at
   every nesting level needs more stack (overflow at about 450 levels on 2 MB in debug; fine in
-  release); the CLI and bindings run the engine on a large-stack thread.
+  release). The CLI uses a large-stack thread and the Python bindings use a larger stack when needed (F-041).
 
 ### F-010: integer digit limit
 - Python 3.11+ refuses to parse integers with more than 4300 digits (`ValueError`), so
@@ -284,7 +284,7 @@ anything requires explicit approval from the project owner (see CLAUDE.md).
 - **Decision**: accept (deliberate), as with F-009. `Value`'s derived `Clone`, its drop glue and some
   operations recurse, so library callers on small stacks (the default 2 MB for a spawned thread)
   can overflow on values nested several thousand levels deep. The CLI and the Python bindings
-  run the engine on a large-stack worker thread. `writes` clones the whole notebook once, as the
+  provide extra stack space for the engine (F-029, F-041). `writes` clones the whole notebook once, as the
   spec allows; cloning only the levels that change is not possible without sharing, which
   `Value` does not do.
 
@@ -596,6 +596,50 @@ doubled final newline, and a common last line that is repeated after the conflic
   on Windows sometimes add one (deliberate deviation). The JSON layer itself rejects it, like `json.loads`; the notebook reader
   (U02) decides.
 - **Q-003** (decided 2026-11-19): v4 only, see F-012.
+
+## Python extension (U15)
+
+### F-040: Python object conversion (U15)
+- `nbdime_rs` reads Python objects directly into `Value`: `dict` with `str` keys, `list`, `str`,
+  `int`, `float`, `bool`, `None`, and subclasses of those (`NotebookNode`, `OrderedDict`, `IntEnum`).
+  Dicts use a Python `items()` iterator, including for subclasses such as `OrderedDict`. A size
+  change raises `RuntimeError`. Exact lists have a direct path and list subclasses use Python
+  iteration. Strings use their stored value. Tuple and set values are also accepted in the
+  `ignores` option. Unsupported document types and non-string dict keys raise `TypeError`.
+- Lone surrogates in a `str` are a `ValueError` (F-005). Integers beyond `i64` go through
+  `int.__repr__`, so the Python 3.11 limit of 4300 digits applies (`ValueError`), as in F-010.
+- Revisiting a container on the current path raises `ValueError("Circular reference detected")`
+  immediately. A container shared by multiple branches is converted at each occurrence. Nesting
+  deeper than 10,000 levels raises `ValueError`. The core diff limit of 500 is an `EngineError`
+  (F-009). Conversion and disposal of converted inputs use explicit stacks.
+- Results are plain `dict`/`list`; `merge_notebooks` returns a `tuple` `(merged, decisions)`.
+
+### F-041: threads and the GIL in `nbdime_rs` (U15)
+- The core runs with the GIL released (`Python::detach`). Inputs up to 24 levels deep use the
+  caller's existing stack when at least 512 KiB remains. Deeper inputs and callers with less
+  available stack use a temporary 32 MiB stack on the same thread. The parity suite includes a
+  patch call from a Python thread with a 32 KiB stack. Ctrl-C is handled when the call returns to
+  the interpreter.
+- Engine errors and Rust panics that unwind become `EngineError`. Fatal process failures such as
+  out-of-memory aborts are outside that error boundary.
+- The notebook differ configuration is built per call from `ignores`/`targets`; there is no
+  module state, so calls from several threads cannot interfere.
+
+### F-042: argument decoding is shared (U15)
+`nbdime_core::options` decodes `ignores`, `targets`, `strategies`/`transients`/`fall_back` and
+the merge `args` for both `nbdime-rs-dev` and `nbdime_rs`; the dev tool's behaviour and messages
+are unchanged. The extension validates dict options at the Python boundary and rejects unknown
+merge argument names. Decisions convert with `merging::decisions_to_value` / `decisions_from_values`.
+
+### F-043: packaging notes (U15)
+- maturin 1.16 lays the wheel out as a package: `nbdime_rs/__init__.py` (a generated
+  `from .nbdime_rs import *` shim) and `nbdime_rs/nbdime_rs.abi3.so`, even with no Python sources
+  in the repository; `import nbdime_rs` and `nbdime_rs.EngineError.__module__` are as specified.
+  The repository itself holds no Python files.
+- `cargo test -p nbdime-py` must run with `--no-default-features` and `PYO3_PYTHON` set: the
+  default `extension-module` feature leaves libpython unlinked, which a test binary needs.
+- The wheel declares BSD-3-Clause and contains the license text. Build the Linux wheel against
+  manylinux2014 for older glibc systems.
 
 ## Phase 4 performance (P4)
 

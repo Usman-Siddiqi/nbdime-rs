@@ -17,7 +17,10 @@ use crate::diffing::DiffError;
 use crate::patch::PatchError;
 use crate::prettyprint::RenderError;
 
-pub use decisions::{apply_decisions, Action, MergeDecision, MergeDecisionBuilder};
+pub use decisions::{
+    apply_decisions, decisions_from_values, decisions_to_value, Action, MergeDecision,
+    MergeDecisionBuilder,
+};
 pub use generic::{decide_merge, decide_merge_with_diff};
 pub use notebooks::{decide_notebook_merge, merge_notebooks, notebook_merge_strategies, MergeArgs};
 pub use strategies::Strategies;

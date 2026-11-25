@@ -69,16 +69,19 @@ ignore-path table equivalent to `set_notebook_diff_ignores`. No global state.
 The boundary is plain Python objects in, plain Python objects out, mirroring nbdime signatures:
 
 ```python
-nbdime_rs.diff_notebooks(a, b, *, sources=True, outputs=True, attachments=True,
-                         metadata=True, identifier=True, details=True, ignore_paths=None) -> list
 nbdime_rs.diff(a, b) -> list
 nbdime_rs.patch(obj, diff) -> object
-nbdime_rs.decide_notebook_merge(base, local, remote, *, merge_strategy="inline",
-                                input_strategy=None, output_strategy=None,
-                                ignore_transients=True, **diff_targets) -> list
-nbdime_rs.merge_notebooks(...) -> (dict, list)
-nbdime_rs.ENGINE_VERSION, nbdime_rs.NBDIME_COMPAT = "4.0.4"
+nbdime_rs.diff_notebooks(a, b, *, ignores=None, targets=None) -> list
+nbdime_rs.decide_merge(base, local, remote, *, strategies=None, transients=None, fall_back=None) -> list
+nbdime_rs.apply_decisions(base, decisions) -> object
+nbdime_rs.decide_notebook_merge(base, local, remote, args=None, *, ignores=None, targets=None) -> list
+nbdime_rs.merge_notebooks(base, local, remote, args=None, *, ignores=None, targets=None) -> (object, list)
+nbdime_rs.ENGINE_VERSION, nbdime_rs.NBDIME_COMPAT = "4.0.4", nbdime_rs.EngineError
 ```
+
+`ignores` maps paths to `True`/`False` or a list, tuple or set of keys. `targets` has the keyword arguments of
+`set_notebook_diff_targets`, `args` the `nbmerge` options; all as in the `nbdime-rs-dev`
+functions of the same names. Conversion rules and threading are in F-040 and F-041.
 
 - Conversion walks Python objects directly (dict/list/str/int/float/bool/None) into `Value`; no
   JSON round trip. Unsupported types raise `TypeError`, and the integration layer falls back to

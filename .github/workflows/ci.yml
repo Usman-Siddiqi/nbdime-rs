@@ -30,7 +30,7 @@ jobs:
         with:
           python-version: "3.13"
       - name: Install the oracle (nbdime 4.0.4)
-        run: pip install "nbdime==4.0.4" "nbformat==5.11.1" pytest
+        run: pip install "nbdime==4.0.4" "nbformat==5.11.1" pytest pytest-timeout
       - name: Fetch upstream test notebooks
         run: git clone --depth 1 --branch v4.0.4 https://github.com/jupyter/nbdime.git "$RUNNER_TEMP/nbdime-upstream"
       - run: cargo build --release -p nbdime-cli
@@ -38,5 +38,8 @@ jobs:
         env:
           NBDIME_UPSTREAM: ${{ runner.temp }}/nbdime-upstream
         run: |
+          export NBDIME_REF_BIN="$(dirname "$(command -v nbdiff)")"
+          export NBDIME_REF_PYTHON="$(command -v python)"
+          git config --global user.name ci && git config --global user.email ci@example.com
           mapfile -t suites < <(grep -v '^\s*#' parity/enabled_suites.txt | sed '/^\s*$/d' | sed 's#^#parity/#')
           python -m pytest -c parity/pytest.ini -p no:tornasync "${suites[@]}"

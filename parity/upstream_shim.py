@@ -9,7 +9,8 @@ code. Our binaries come first on PATH, so git finds our drivers and filters too.
 
 Log lines on stderr (`[W module:123] message`) become records of the `nbdime` logger, so
 `caplog` sees them as it sees upstream's. A namespace remembers the cwd it was parsed in, because
-upstream reads configuration files while parsing.
+upstream reads configuration files while parsing. Help and usage errors raise SystemExit, as
+argparse does inside upstream's entry points.
 """
 
 import argparse
@@ -75,7 +76,11 @@ def run_binary(cmd, argv, cwd=None):
     p = subprocess.run([str(exe)] + cmd[1:] + list(argv), stdin=subprocess.DEVNULL,
                        capture_output=True, cwd=cwd)
     sys.stdout.write(p.stdout.decode("utf-8", "surrogateescape"))
-    _replay_stderr(p.stderr.decode("utf-8", "surrogateescape"))
+    err = p.stderr.decode("utf-8", "surrogateescape")
+    _replay_stderr(err)
+    # argparse leaves through SystemExit (help, usage errors) where the app would return a code.
+    if any(a in ("-h", "--help") for a in argv) or (p.returncode == 2 and "usage:" in err):
+        raise SystemExit(p.returncode)
     return p.returncode
 
 

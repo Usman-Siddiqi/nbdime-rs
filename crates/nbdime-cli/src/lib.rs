@@ -6,6 +6,7 @@ pub mod args;
 pub mod config;
 pub mod dev;
 pub mod dispatch;
+pub mod filter_integration;
 pub mod gitfiles;
 pub mod logging;
 pub mod nbdiffapp;

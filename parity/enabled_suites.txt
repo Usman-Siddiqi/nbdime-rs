@@ -12,3 +12,4 @@ test_cli.py
 test_cli_nbshow.py
 test_cli_git.py
 test_upstream_suite.py
+test_u15_python.py

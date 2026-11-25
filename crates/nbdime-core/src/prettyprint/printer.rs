@@ -9,7 +9,7 @@ use crate::path::{join_path, star_path_str};
 use crate::py;
 use crate::value::{Int, Map, PyType, Value};
 
-use super::highlight::colorize_markdown;
+use super::highlight::colorize_source;
 use super::pformat::pformat;
 use super::render::diff_render;
 use super::{
@@ -36,6 +36,17 @@ pub struct Printer<'a> {
     /// Printing decisions the merge engine made: the conflict record it builds is a plain `dict`,
     /// where every dict of a notebook is a `NotebookNode`.
     engine_values: bool,
+    /// `config.language`: the lexer for code cells, which only `notebook` sets.
+    language: Language,
+}
+
+/// The truthy values `config.language` can hold.
+enum Language {
+    /// Unset, or falsy.
+    None,
+    Name(String),
+    /// Truthy but not a string: looking a lexer up by it raises.
+    Unnameable,
 }
 
 const NOTEBOOK_DIFF_ENTRY_END: &str = "\n";
@@ -48,6 +59,7 @@ impl<'a> Printer<'a> {
             depth: 0,
             color_failed: false,
             engine_values: false,
+            language: Language::None,
         }
     }
 
@@ -315,11 +327,21 @@ impl<'a> Printer<'a> {
             return invalid("expected string argument");
         };
         let nested = format!("{prefix}{IND}");
-        if is_markdown && prefix.chars().all(py::is_space) {
-            let highlighted = colorize_markdown(text)?;
-            self.multiline(&highlighted, &nested);
-        } else {
-            self.multiline(text, &nested);
+        let lexer = match &self.language {
+            _ if is_markdown => Some("markdown"),
+            Language::None => None,
+            Language::Name(name) => Some(name.as_str()),
+            Language::Unnameable if prefix.chars().all(py::is_space) => {
+                return invalid("'lower' is not an attribute of the language");
+            }
+            Language::Unnameable => None,
+        };
+        match lexer {
+            Some(lexer) if prefix.chars().all(py::is_space) => {
+                let highlighted = colorize_source(text, lexer)?;
+                self.multiline(&highlighted, &nested);
+            }
+            _ => self.multiline(text, &nested),
         }
         Ok(())
     }
@@ -418,6 +440,71 @@ impl<'a> Printer<'a> {
         if config.details && map.keys().any(|k| !EXCLUDE.contains(&k.as_str())) {
             header(self);
             self.dict(map, &EXCLUDE, &key_prefix)?;
+        }
+        Ok(())
+    }
+
+    /// `pretty_print_notebook`: the notebook `nb`, with code highlighted in the language its
+    /// metadata names.
+    pub fn notebook(&mut self, nb: &Value) -> Result<()> {
+        let Value::Object(map) = nb else {
+            return invalid("a notebook must be a dict");
+        };
+        let metadata = map.get("metadata").ok_or_else(|| {
+            PrettyPrintError::Invalid("notebook has no attribute 'metadata'".into())
+        })?;
+        let Value::Object(metadata_map) = metadata else {
+            return invalid("metadata must be a dict");
+        };
+        let default_info = Value::Object(Map::new());
+        let Value::Object(info) = metadata_map.get("language_info").unwrap_or(&default_info) else {
+            return invalid("language_info must be a dict");
+        };
+        let language = info
+            .get("pygments_lexer")
+            .or_else(|| info.get("name"))
+            .unwrap_or(&Value::Null);
+        self.language = match language {
+            Value::Str(name) if !name.is_empty() => Language::Name(name.clone()),
+            other if other.truthy() => Language::Unnameable,
+            _ => Language::None,
+        };
+
+        let config = self.config;
+        if config.details {
+            let number = |key: &str| match map.get(key) {
+                Some(Value::Int(n)) => Ok(n.to_string()),
+                Some(Value::Bool(b)) => Ok(u8::from(*b).to_string()),
+                Some(Value::Float(f)) if f.is_finite() => Ok(format!("{}", f.trunc())),
+                _ => invalid(format!("notebook has no number {key:?}")),
+            };
+            let version = format!("{}.{}", number("nbformat")?, number("nbformat_minor")?);
+            self.key_value("notebook format", &version, "");
+        }
+
+        // The order of a Python `set` of strings varies between runs; ours is sorted.
+        let mut unknown: Vec<&String> = map
+            .keys()
+            .filter(|k| !["nbformat", "nbformat_minor", "metadata", "cells"].contains(&k.as_str()))
+            .collect();
+        unknown.sort();
+        if !unknown.is_empty() {
+            let items: Vec<String> = unknown
+                .iter()
+                .map(|k| crate::prettyprint::repr_str(k))
+                .collect();
+            self.key_value("unknown keys", &format!("{{{}}}", items.join(", ")), "");
+        }
+
+        if config.metadata {
+            self.metadata(metadata, &["kernelspec", "language_info"], "")?;
+        }
+
+        let Some(Value::List(cells)) = map.get("cells") else {
+            return invalid("notebook has no list of cells");
+        };
+        for (i, cell) in cells.iter().enumerate() {
+            self.cell(Some(i), cell, "", false)?;
         }
         Ok(())
     }

@@ -532,3 +532,50 @@ doubled final newline, and a common last line that is repeated after the conflic
   on Windows sometimes add one (deliberate deviation). The JSON layer itself rejects it, like `json.loads`; the notebook reader
   (U02) decides.
 - **Q-003** (decided 2026-11-19): v4 only, see F-012.
+
+## Phase 4 performance (P4)
+
+### F-045: why aligning a re-indented cell was cubic, and the exact fix
+- **What**: the cost was not in the line alignment (`compute_snakes_multilevel` over lines is
+  quadratic and cheap: a 1,000-line re-indent aligns in well under 0.1 s) but in the *cell*
+  alignment. Without cell ids (nbformat < 4.5, or ids that differ), `compare_cell_strict` /
+  `compare_cell_approximate` call `compare_strings_approximate` on the two whole sources with no
+  `maxlen`, and the bounds pass for a re-indent, so `SequenceMatcher(None, a, b).ratio()` runs on
+  tens of thousands of characters. `find_longest_match` costs one step per pair of equal
+  characters in its rectangle (about `|a| * |b| / alphabet`), and for text that matches line by
+  line `get_matching_blocks` finds the lines first to last: every search returns the first line
+  of its rectangle and recurses into everything after it. That is one full rescan per line,
+  cubic in the number of lines. Upstream has the same behaviour (CPython's difflib), roughly 75
+  times slower.
+- **Fix (identical results)**: `get_matching_blocks` only searches rectangles nested in earlier
+  ones, and the rows of pending rectangles are disjoint. A match ending in row `i` of a nested
+  rectangle is never longer than the longest match ending in row `i` when that row was last
+  scanned in full (clipping to a smaller rectangle only shortens runs). The search keeps that
+  per-row maximum; a rectangle's bound is the maximum over its rows. The scan visits candidates
+  in the tie-breaking order and only a strictly longer match replaces the best, so the first match
+  that reaches the bound is the answer and the scan stops there; rectangles whose bound is 0 are
+  not scanned at all. With autojunk the bound is on the indexed (non-popular) run lengths, which
+  is what the scan computes, and the extension over popular elements runs unchanged afterwards.
+  Checked against a literal port of CPython's algorithm on random and re-indented inputs (unit
+  tests in `difflib.rs`) and against CPython itself on 3,000 random pairs and the re-indent cases
+  up to 250 lines.
+- **Effect**: one 1,000-line cell re-indented, no ids: 14.4 s to 0.16 s (generated statements),
+  repeated statements 500 lines 5.0 s to 0.12 s. What remains is the first, full search of the
+  whole texts, which CPython also does: quadratic in characters (0.3 s at 1,000 lines). A suffix
+  automaton per large rectangle would make that search linear and also yields the per-row
+  maxima; not done (see progress, next steps).
+- **Upstream**: relevant to a future upstream performance note (the same bound applies to
+  CPython's difflib); nothing to report as a bug.
+
+### F-046: other shortcuts that keep results identical
+- `_compare_mimedata` on two equal non-text strings returns True without testing `_is_base64`:
+  both the base64 branch (`x == y`) and the text branch accept equal strings. This removed 47% of
+  the instructions on identical image-heavy notebooks.
+- `quick_ratio` is the size of the multiset intersection, so it is computed from per-character
+  counts (`sorted_char_counts`) instead of merging sorted character lists.
+- `compare_cell_by_ids` compares a precomputed hash of string ids first; equal hashes still
+  compare the strings.
+- The brute-force LCS table is kept in Allison-Dix bit-vector form (64 columns per addition). It
+  equals the textbook table for any compare relation, not only equivalences, because the
+  derivation uses only the recurrence; the backtrack reads `R[x][y]` from the bit rows and is
+  unchanged. Checked against the textbook table on 400 random relations of up to 150x150.

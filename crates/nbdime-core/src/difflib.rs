@@ -79,21 +79,60 @@ pub fn quick_ratio<T: Eq + Hash>(a: &[T], b: &[T]) -> f64 {
     calculate_ratio(matches, a.len() + b.len())
 }
 
-/// [`quick_ratio`] of two sequences that are already sorted, which needs no hashing.
-pub fn quick_ratio_sorted<T: Ord>(a_sorted: &[T], b_sorted: &[T]) -> f64 {
+/// The distinct elements of a sequence with their numbers of occurrences, by ascending
+/// element; what [`quick_ratio_counted`] needs of a sequence.
+pub fn sorted_counts<T: Ord + Clone>(sequence: &[T]) -> Vec<(T, usize)> {
+    let mut sorted = sequence.to_vec();
+    sorted.sort_unstable();
+    let mut counts: Vec<(T, usize)> = Vec::new();
+    for elt in sorted {
+        match counts.last_mut() {
+            Some((last, count)) if *last == elt => *count += 1,
+            _ => counts.push((elt, 1)),
+        }
+    }
+    counts
+}
+
+/// [`sorted_counts`] of the characters of a string, counting ASCII without sorting.
+pub fn sorted_char_counts(chars: &[char]) -> Vec<(char, usize)> {
+    let mut ascii = [0usize; 128];
+    let mut other = Vec::new();
+    for &c in chars {
+        match ascii.get_mut(c as usize) {
+            Some(count) => *count += 1,
+            None => other.push(c),
+        }
+    }
+    let mut counts: Vec<(char, usize)> = (0u8..128)
+        .zip(ascii)
+        .filter(|&(_, count)| count > 0)
+        .map(|(c, count)| (char::from(c), count))
+        .collect();
+    counts.extend(sorted_counts(&other));
+    counts
+}
+
+/// [`quick_ratio`] from the [`sorted_counts`] of two sequences of `len_a` and `len_b` elements.
+pub fn quick_ratio_counted<T: Ord>(
+    a: &[(T, usize)],
+    b: &[(T, usize)],
+    len_a: usize,
+    len_b: usize,
+) -> f64 {
     let (mut i, mut j, mut matches) = (0, 0, 0);
-    while i < a_sorted.len() && j < b_sorted.len() {
-        match a_sorted[i].cmp(&b_sorted[j]) {
+    while i < a.len() && j < b.len() {
+        match a[i].0.cmp(&b[j].0) {
             Ordering::Less => i += 1,
             Ordering::Greater => j += 1,
             Ordering::Equal => {
-                matches += 1;
+                matches += a[i].1.min(b[j].1);
                 i += 1;
                 j += 1;
             }
         }
     }
-    calculate_ratio(matches, a_sorted.len() + b_sorted.len())
+    calculate_ratio(matches, len_a + len_b)
 }
 
 /// Positions of each element in a sequence: the part of a [`SequenceMatcher`] that depends on
@@ -609,18 +648,40 @@ mod tests {
     }
 
     #[test]
-    fn sorted_quick_ratio_agrees_with_hashed() {
-        let sorted = |s: &str| {
-            let mut v = chars(s);
-            v.sort_unstable();
-            v
-        };
-        for (x, y) in [("aaab", "abbb"), ("", ""), ("abc", ""), ("hello", "world")] {
-            assert_eq!(
-                quick_ratio_sorted(&sorted(x), &sorted(y)),
-                quick_ratio(&chars(x), &chars(y))
-            );
+    fn counted_quick_ratio_agrees_with_hashed() {
+        let strings = [
+            "aaab",
+            "abbb",
+            "",
+            "abc",
+            "hello",
+            "world",
+            "\u{e9}t\u{e9} \u{1F600}x",
+            "x\u{1F600}\u{e9}",
+        ];
+        for x in strings {
+            for y in strings {
+                let (x, y) = (chars(x), chars(y));
+                let expected = quick_ratio(&x, &y);
+                assert_eq!(
+                    quick_ratio_counted(
+                        &sorted_char_counts(&x),
+                        &sorted_char_counts(&y),
+                        x.len(),
+                        y.len()
+                    ),
+                    expected
+                );
+                assert_eq!(
+                    quick_ratio_counted(&sorted_counts(&x), &sorted_counts(&y), x.len(), y.len()),
+                    expected
+                );
+            }
         }
+        assert_eq!(
+            sorted_char_counts(&chars("b\u{e9}a\u{e9}b")),
+            [('a', 1), ('b', 2), ('\u{e9}', 2)]
+        );
     }
 
     #[test]

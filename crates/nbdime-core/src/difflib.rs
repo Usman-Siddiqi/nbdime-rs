@@ -96,6 +96,62 @@ pub fn quick_ratio_sorted<T: Ord>(a_sorted: &[T], b_sorted: &[T]) -> f64 {
     calculate_ratio(matches, a_sorted.len() + b_sorted.len())
 }
 
+/// The distinct elements of a sequence with their numbers of occurrences, by ascending
+/// element; what [`quick_ratio_counted`] needs of a sequence.
+pub fn sorted_counts<T: Ord + Clone>(sequence: &[T]) -> Vec<(T, usize)> {
+    let mut sorted = sequence.to_vec();
+    sorted.sort_unstable();
+    let mut counts: Vec<(T, usize)> = Vec::new();
+    for elt in sorted {
+        match counts.last_mut() {
+            Some((last, count)) if *last == elt => *count += 1,
+            _ => counts.push((elt, 1)),
+        }
+    }
+    counts
+}
+
+/// [`sorted_counts`] of the characters of a string, counting ASCII without sorting.
+pub fn sorted_char_counts(chars: &[char]) -> Vec<(char, usize)> {
+    let mut ascii = [0usize; 128];
+    let mut other = Vec::new();
+    for &c in chars {
+        match ascii.get_mut(c as usize) {
+            Some(count) => *count += 1,
+            None => other.push(c),
+        }
+    }
+    let mut counts: Vec<(char, usize)> = (0u8..128)
+        .zip(ascii)
+        .filter(|&(_, count)| count > 0)
+        .map(|(c, count)| (char::from(c), count))
+        .collect();
+    counts.extend(sorted_counts(&other));
+    counts
+}
+
+/// [`quick_ratio`] from the [`sorted_counts`] of two sequences of `len_a` and `len_b` elements.
+pub fn quick_ratio_counted<T: Ord>(
+    a: &[(T, usize)],
+    b: &[(T, usize)],
+    len_a: usize,
+    len_b: usize,
+) -> f64 {
+    let (mut i, mut j, mut matches) = (0, 0, 0);
+    while i < a.len() && j < b.len() {
+        match a[i].0.cmp(&b[j].0) {
+            Ordering::Less => i += 1,
+            Ordering::Greater => j += 1,
+            Ordering::Equal => {
+                matches += a[i].1.min(b[j].1);
+                i += 1;
+                j += 1;
+            }
+        }
+    }
+    calculate_ratio(matches, len_a + len_b)
+}
+
 /// Positions of each element in a sequence: the part of a [`SequenceMatcher`] that depends on
 /// `b` alone, which can be built once and shared by matchers with the same `b`.
 ///
@@ -187,7 +243,13 @@ impl<'a, T: Eq + Hash + Clone> SequenceMatcher<'a, T> {
     /// Among equally long matches the one starting earliest in `a` wins, then the one starting
     /// earliest in `b`. With no match at all the result is `Match { a: alo, b: blo, size: 0 }`.
     pub fn find_longest_match(&self, alo: usize, ahi: usize, blo: usize, bhi: usize) -> Match {
-        self.longest_match(&mut Scratch::new(self.b.len()), alo, ahi, blo, bhi)
+        self.longest_match(
+            &mut Scratch::new(self.a.len(), self.b.len()),
+            alo,
+            ahi,
+            blo,
+            bhi,
+        )
     }
 
     fn longest_match(
@@ -204,26 +266,44 @@ impl<'a, T: Eq + Hash + Clone> SequenceMatcher<'a, T> {
             b: blo,
             size: 0,
         };
-        for i in alo..ahi {
-            if let Some(js) = index.get(&self.a[i]) {
-                let start = js.partition_point(|&j| j < blo);
-                for &j in js[start..].iter().take_while(|&&j| j < bhi) {
-                    // `prev[j]` holds the length of the match ending at `a[i - 1]` and `b[j - 1]`.
-                    let k = scratch.prev[j] + 1;
-                    scratch.next[j + 1] = k;
-                    scratch.next_touched.push(j + 1);
-                    if k > best.size {
-                        best = Match {
-                            a: i + 1 - k,
-                            b: j + 1 - k,
-                            size: k,
-                        };
+        // The scan visits candidates in the order that breaks ties, and only a strictly longer
+        // match replaces the best one, so once a match as long as `limit` is found it is final.
+        let limit = scratch.row_limit[alo..ahi]
+            .iter()
+            .copied()
+            .max()
+            .unwrap_or(0)
+            .min(ahi - alo)
+            .min(bhi - blo);
+        if limit > 0 {
+            'rows: for i in alo..ahi {
+                let mut row_max = 0;
+                if let Some(js) = index.get(&self.a[i]) {
+                    let start = js.partition_point(|&j| j < blo);
+                    for &j in js[start..].iter().take_while(|&&j| j < bhi) {
+                        // `prev[j]` holds the length of the match ending at `a[i - 1]` and
+                        // `b[j - 1]`.
+                        let k = scratch.prev[j] + 1;
+                        scratch.next[j + 1] = k;
+                        scratch.next_touched.push(j + 1);
+                        row_max = row_max.max(k);
+                        if k > best.size {
+                            best = Match {
+                                a: i + 1 - k,
+                                b: j + 1 - k,
+                                size: k,
+                            };
+                            if k >= limit {
+                                break 'rows;
+                            }
+                        }
                     }
                 }
+                scratch.row_limit[i] = row_max;
+                scratch.advance();
             }
-            scratch.advance();
+            scratch.reset();
         }
-        scratch.reset();
         // Elements left out of the index (popular ones) can still extend the block. Without any
         // the block is already maximal and neither loop moves.
         while best.a > alo && best.b > blo && self.a[best.a - 1] == self.b[best.b - 1] {
@@ -247,7 +327,7 @@ impl<'a, T: Eq + Hash + Clone> SequenceMatcher<'a, T> {
     pub fn matching_blocks(&self) -> &[Match] {
         self.matching_blocks.get_or_init(|| {
             let (la, lb) = (self.a.len(), self.b.len());
-            let mut scratch = Scratch::new(lb);
+            let mut scratch = Scratch::new(la, lb);
             let mut queue = vec![(0, la, 0, lb)];
             let mut found = Vec::new();
             while let Some((alo, ahi, blo, bhi)) = queue.pop() {
@@ -415,20 +495,28 @@ fn format_range_unified(start: usize, stop: usize) -> String {
 /// Position `j + 1` of a buffer holds the length of the longest match ending at `b[j]`, so that
 /// `prev[j]` is the entry for `b[j - 1]`. Only touched positions are cleared between rows, which
 /// keeps each row proportional to its number of matches.
+///
+/// `row_limit[i]` bounds the length of any match ending in row `i` of the rectangles still to
+/// be searched: it is the longest one found ending there when the row was last scanned in full.
+/// `get_matching_blocks` only searches rectangles nested in earlier ones, where a match can only
+/// be shorter, and rows are never shared between pending rectangles. Without this bound, the
+/// common case of one match per line, found first to last, rescans everything after each line.
 struct Scratch {
     prev: Vec<usize>,
     next: Vec<usize>,
     prev_touched: Vec<usize>,
     next_touched: Vec<usize>,
+    row_limit: Vec<usize>,
 }
 
 impl Scratch {
-    fn new(len_b: usize) -> Self {
+    fn new(len_a: usize, len_b: usize) -> Self {
         Scratch {
             prev: vec![0; len_b + 1],
             next: vec![0; len_b + 1],
             prev_touched: Vec::new(),
             next_touched: Vec::new(),
+            row_limit: vec![usize::MAX; len_a],
         }
     }
 
@@ -443,10 +531,15 @@ impl Scratch {
     }
 
     fn reset(&mut self) {
-        for &t in &self.prev_touched {
-            self.prev[t] = 0;
+        for (buffer, touched) in [
+            (&mut self.prev, &mut self.prev_touched),
+            (&mut self.next, &mut self.next_touched),
+        ] {
+            for &t in touched.iter() {
+                buffer[t] = 0;
+            }
+            touched.clear();
         }
-        self.prev_touched.clear();
     }
 }
 
@@ -569,21 +662,48 @@ mod tests {
         let (a, b) = (chars("aaab"), chars("abbb"));
         // a: min(3, 1) = 1, b: min(1, 3) = 1.
         assert_eq!(quick_ratio(&a, &b), 2.0 * 2.0 / 8.0);
+        assert_eq!(
+            quick_ratio_sorted(&['a', 'a', 'b'], &['a', 'b', 'b']),
+            2.0 / 3.0
+        );
+        assert_eq!(quick_ratio_sorted::<char>(&[], &[]), 1.0);
     }
 
     #[test]
-    fn sorted_quick_ratio_agrees_with_hashed() {
-        let sorted = |s: &str| {
-            let mut v = chars(s);
-            v.sort_unstable();
-            v
-        };
-        for (x, y) in [("aaab", "abbb"), ("", ""), ("abc", ""), ("hello", "world")] {
-            assert_eq!(
-                quick_ratio_sorted(&sorted(x), &sorted(y)),
-                quick_ratio(&chars(x), &chars(y))
-            );
+    fn counted_quick_ratio_agrees_with_hashed() {
+        let strings = [
+            "aaab",
+            "abbb",
+            "",
+            "abc",
+            "hello",
+            "world",
+            "\u{e9}t\u{e9} \u{1F600}x",
+            "x\u{1F600}\u{e9}",
+        ];
+        for x in strings {
+            for y in strings {
+                let (x, y) = (chars(x), chars(y));
+                let expected = quick_ratio(&x, &y);
+                assert_eq!(
+                    quick_ratio_counted(
+                        &sorted_char_counts(&x),
+                        &sorted_char_counts(&y),
+                        x.len(),
+                        y.len()
+                    ),
+                    expected
+                );
+                assert_eq!(
+                    quick_ratio_counted(&sorted_counts(&x), &sorted_counts(&y), x.len(), y.len()),
+                    expected
+                );
+            }
         }
+        assert_eq!(
+            sorted_char_counts(&chars("b\u{e9}a\u{e9}b")),
+            [('a', 1), ('b', 2), ('\u{e9}', 2)]
+        );
     }
 
     #[test]
@@ -718,6 +838,179 @@ mod tests {
                 size: 9
             }
         );
+    }
+
+    /// `get_matching_blocks` exactly as CPython writes it, without the row limits.
+    fn reference_blocks<T: Eq + Hash + Clone>(a: &[T], b: &[T], autojunk: bool) -> Vec<Match> {
+        let index = if autojunk {
+            PositionIndex::without_popular(b)
+        } else {
+            PositionIndex::new(b)
+        };
+        let longest = |alo: usize, ahi: usize, blo: usize, bhi: usize| {
+            let (mut besti, mut bestj, mut bestsize) = (alo, blo, 0);
+            let mut j2len: HashMap<usize, usize> = HashMap::new();
+            for (i, ai) in a.iter().enumerate().take(ahi).skip(alo) {
+                let mut newj2len = HashMap::new();
+                for &j in index.get(ai).unwrap_or(&[]) {
+                    if j < blo {
+                        continue;
+                    }
+                    if j >= bhi {
+                        break;
+                    }
+                    let k = j.checked_sub(1).and_then(|p| j2len.get(&p)).unwrap_or(&0) + 1;
+                    newj2len.insert(j, k);
+                    if k > bestsize {
+                        (besti, bestj, bestsize) = (i + 1 - k, j + 1 - k, k);
+                    }
+                }
+                j2len = newj2len;
+            }
+            while besti > alo && bestj > blo && a[besti - 1] == b[bestj - 1] {
+                (besti, bestj, bestsize) = (besti - 1, bestj - 1, bestsize + 1);
+            }
+            while besti + bestsize < ahi
+                && bestj + bestsize < bhi
+                && a[besti + bestsize] == b[bestj + bestsize]
+            {
+                bestsize += 1;
+            }
+            Match {
+                a: besti,
+                b: bestj,
+                size: bestsize,
+            }
+        };
+        let mut queue = vec![(0, a.len(), 0, b.len())];
+        let mut found = Vec::new();
+        while let Some((alo, ahi, blo, bhi)) = queue.pop() {
+            let m = longest(alo, ahi, blo, bhi);
+            if m.size > 0 {
+                found.push(m);
+                if alo < m.a && blo < m.b {
+                    queue.push((alo, m.a, blo, m.b));
+                }
+                if m.a + m.size < ahi && m.b + m.size < bhi {
+                    queue.push((m.a + m.size, ahi, m.b + m.size, bhi));
+                }
+            }
+        }
+        found.sort_unstable();
+        let mut blocks: Vec<Match> = Vec::new();
+        for m in found {
+            match blocks.last_mut() {
+                Some(last) if last.a + last.size == m.a && last.b + last.size == m.b => {
+                    last.size += m.size;
+                }
+                _ => blocks.push(m),
+            }
+        }
+        blocks.push(Match {
+            a: a.len(),
+            b: b.len(),
+            size: 0,
+        });
+        blocks
+    }
+
+    /// A small deterministic generator, enough to vary test inputs.
+    struct XorShift(u64);
+
+    impl XorShift {
+        fn below(&mut self, n: usize) -> usize {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            (self.0 % n as u64) as usize
+        }
+
+        fn text(&mut self, alphabet: &[char], len: usize) -> Vec<char> {
+            (0..len)
+                .map(|_| alphabet[self.below(alphabet.len())])
+                .collect()
+        }
+    }
+
+    #[test]
+    fn matching_blocks_agree_with_the_unbounded_search_on_random_text() {
+        let mut rng = XorShift(0x9E37_79B9_7F4A_7C15);
+        for round in 0..3000 {
+            let alphabet: Vec<char> = "ab \nxyz=1"[..1 + round % 9].chars().collect();
+            let len_a = rng.below(60);
+            let a = rng.text(&alphabet, len_a);
+            // Half the cases derive b from a, so that there are long matches to find.
+            let b = if round % 2 == 0 {
+                let len_b = rng.below(60);
+                rng.text(&alphabet, len_b)
+            } else {
+                let mut b = a.clone();
+                for _ in 0..rng.below(8) {
+                    let at = rng.below(b.len() + 1);
+                    match rng.below(3) {
+                        0 if at < b.len() => {
+                            b.remove(at);
+                        }
+                        1 => b.insert(at, alphabet[rng.below(alphabet.len())]),
+                        _ => b.truncate(at),
+                    }
+                }
+                b
+            };
+            assert_eq!(
+                SequenceMatcher::new(&a, &b).matching_blocks(),
+                reference_blocks(&a, &b, false),
+                "{a:?} vs {b:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn matching_blocks_agree_with_the_unbounded_search_on_reindented_lines() {
+        let mut rng = XorShift(7);
+        let words = ["x", "y", "= ", "+ ", "1", "(", ")", "print", "compute_"];
+        for indent in ["", "  ", "    ", "\t"] {
+            let lines: Vec<String> = (0..80)
+                .map(|_| {
+                    let n = 1 + rng.below(6);
+                    let mut line: String = (0..n).map(|_| words[rng.below(words.len())]).collect();
+                    line.push('\n');
+                    line
+                })
+                .collect();
+            let a: Vec<char> = lines
+                .iter()
+                .flat_map(|l| format!("    {l}").chars().collect::<Vec<_>>())
+                .collect();
+            let b: Vec<char> = lines
+                .iter()
+                .flat_map(|l| format!("{indent}{l}").chars().collect::<Vec<_>>())
+                .collect();
+            let reversed: Vec<char> = lines.iter().rev().flat_map(|l| l.chars()).collect();
+            for (x, y) in [(&a, &b), (&b, &a), (&a, &reversed), (&reversed, &b)] {
+                assert_eq!(
+                    SequenceMatcher::new(x, y).matching_blocks(),
+                    reference_blocks(x, y, false)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn matching_blocks_with_autojunk_agree_with_the_unbounded_search() {
+        let mut rng = XorShift(42);
+        for _ in 0..200 {
+            let len_a = 150 + rng.below(150);
+            let a = rng.text(&['a', 'b', 'c', 'd'], len_a);
+            let mut b = rng.text(&['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j'], 250);
+            let at = rng.below(100);
+            let take = rng.below(a.len());
+            b.splice(at..at, a[..take].iter().copied());
+            assert_eq!(
+                SequenceMatcher::with_autojunk(&a, &b).matching_blocks(),
+                reference_blocks(&a, &b, true)
+            );
+        }
     }
 
     #[test]

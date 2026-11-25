@@ -12,6 +12,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::json::{self, DumpOptions, ParseError};
+use crate::log::{self, Level};
 use crate::py::splitlines_keepends;
 use crate::value::{Int, Map, Value};
 
@@ -47,12 +48,46 @@ fn in_cell(index: usize) -> impl Fn(NbformatError) -> NbformatError {
 pub fn reads(text: &str) -> Result<Value, NbformatError> {
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     let mut nb = json::parse(text)?;
+    if upgrade_empty_v3(&mut nb) {
+        return Ok(nb);
+    }
     let minor = version_minor(&nb)?;
     let map = object_mut(&mut nb, "notebook")?;
     rejoin_lines(map)?;
     strip_transient(map)?;
     validate(map, minor, false)?;
     Ok(nb)
+}
+
+/// `nbformat.v4.upgrade` of a v3 notebook that has no cells, which is the only v3 notebook
+/// accepted (findings F-012): the upgrade then involves no cell conversion and no random cell
+/// ids. Returns whether `nb` was one.
+fn upgrade_empty_v3(nb: &mut Value) -> bool {
+    let Value::Object(map) = nb else {
+        return false;
+    };
+    let has_no_cells = matches!(map.get("worksheets"), Some(Value::List(w)) if w.is_empty());
+    if map.get("nbformat") != Some(&Value::from(3)) || !has_no_cells {
+        return false;
+    }
+    let orig = |map: &mut Map, key: &str, default: i64| match map.shift_remove(key) {
+        Some(value) if value.truthy() => value,
+        _ => Value::from(default),
+    };
+    let orig_nbformat = orig(map, "orig_nbformat", 3);
+    let orig_minor = orig(map, "orig_nbformat_minor", 0);
+    let Some(Value::Object(metadata)) = map.get_mut("metadata") else {
+        return false;
+    };
+    metadata.insert("orig_nbformat".into(), orig_nbformat);
+    metadata.insert("orig_nbformat_minor".into(), orig_minor);
+    metadata.shift_remove("name");
+    metadata.shift_remove("signature");
+    map.insert("nbformat".into(), Value::from(4));
+    map.insert("nbformat_minor".into(), Value::from(5));
+    map.shift_remove("worksheets");
+    map.insert("cells".into(), Value::List(Vec::new()));
+    true
 }
 
 /// The text `nbformat.write(nb, fp)` writes for a v4 notebook.
@@ -408,10 +443,18 @@ fn repair_ids(cells: &mut [Value], writing: bool) -> Result<(), NbformatError> {
         let Value::Object(cell) = &mut cells[index] else {
             continue;
         };
-        let Some((position, _, _)) = cell.shift_remove_full("id") else {
+        let Some((position, _, previous)) = cell.shift_remove_full("id") else {
             continue;
         };
         let id = ids.generate(&cells[index]);
+        if let (true, Value::Str(previous)) = (writing, previous) {
+            log::emit(
+                Level::Warning,
+                "warnings",
+                110,
+                format!("nbformat/validator.py:434: DuplicateCellId: Non-unique cell id '{previous}' detected. Corrected to '{id}'.\n  _validate(nbdict, ref, version, version_minor, relax_add_props)\n"),
+            );
+        }
         if let Value::Object(cell) = &mut cells[index] {
             cell.shift_insert(position, "id".into(), Value::Str(id));
         }
@@ -524,6 +567,21 @@ mod tests {
 
     fn read(text: &str) -> Value {
         reads(text).unwrap()
+    }
+
+    #[test]
+    fn a_v3_notebook_without_cells_is_upgraded_and_others_are_rejected() {
+        let nb = read(
+            r#"{"nbformat": 3, "nbformat_minor": 0, "metadata": {"name": "n"}, "worksheets": []}"#,
+        );
+        assert_eq!(
+            nb,
+            parse(
+                r#"{"nbformat": 4, "nbformat_minor": 5, "metadata": {"orig_nbformat": 3, "orig_nbformat_minor": 0}, "cells": []}"#
+            )
+        );
+        let with_cell = r#"{"nbformat": 3, "nbformat_minor": 0, "metadata": {}, "worksheets": [{"cells": [{"cell_type": "code", "input": "1"}]}]}"#;
+        assert!(reads(with_cell).is_err());
     }
 
     fn notebook(cells: &str) -> String {

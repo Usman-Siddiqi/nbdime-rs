@@ -8,6 +8,7 @@ including the repository files the commands write (.git/config, attributes, merg
 """
 
 import json
+import os
 import subprocess
 
 from gen import rng_for
@@ -19,6 +20,9 @@ GIT_ENV = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.com", "GIT_COM
            "GIT_COMMITTER_DATE": "2020-01-01T00:00:00Z"}
 MASK = [
     (rb"/tmp/[^\s'\"]*?/(?:[0-9A-Za-z]+_)?(?=[^/\s]*\.ipynb)", b"{tmp}/"),
+    (rb"(?m)(?<=Merge result written to )\.merge_file_[0-9A-Za-z]{6}$", b"{merge-result-tmp}"),
+    (rb"(?m)^(\[W warnings:110\] )/[^\n]*/site-packages/(?=nbformat/validator\.py:434: DuplicateCellId: )",
+     rb"\1"),
     (rb"\d{4}-\d\d-\d\d \d\d:\d\d:\d\d(?:\.\d+)?", b"{time}"),
     (rb"\(no timestamp\)", b"{time}"),
 ]
@@ -143,6 +147,29 @@ def test_cli_git_diff_driver_filters(sandbox):
                     "*.ipynb\tdiff=jupyternotebook filter=%s\n" % flt)
             cases += [git_case(setup, a) for a in (["diff"], ["diff", "HEAD"])]
     check_cli(cases, root, env, min_cases=len(cases))
+
+
+def test_cli_git_diff_driver_filter_paths_and_diagnostics(sandbox):
+    root, env = sandbox
+    notebook = '{"cells": [], "metadata": {}, "nbformat": 4, "nbformat_minor": 5}'
+
+    def setup(d):
+        plain_repo(env)(d)
+        (d / "a.ipynb").write_text(notebook)
+        (d / "dir.ipynb").mkdir()
+        (d / ".git" / "info" / "attributes").write_text("*.ipynb filter=test\n")
+        (d / "bad-config").write_text("[not a config\n")
+        _git(d, "config", "filter.test.clean", f"printf '%s' '{notebook}'", env=env)
+
+    def case(path, remote="a.ipynb", **options):
+        return {"cmd": "git-nbdiffdriver", "setup": setup, **options,
+                "args": ["diff", "--use-filter", path, "a.ipynb", "0", "100644",
+                         remote, "0", "100644"]}
+
+    cases = [case(os.fsdecode(b"a\xff.ipynb")),
+             case("a.ipynb", env={"GIT_CONFIG": "{dir}/bad-config"}),
+             case("dir.ipynb", remote="dir.ipynb")]
+    check_cli(cases, root, env, min_cases=3)
 
 
 def test_cli_git_merge_driver(sandbox):

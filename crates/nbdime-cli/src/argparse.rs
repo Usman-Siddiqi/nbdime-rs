@@ -4,8 +4,6 @@
 //! and the left-to-right way positionals are consumed around options follow `argparse`'s
 //! algorithm, so the same command lines parse the same way. Help and usage texts are our own.
 
-use std::fmt::Write as _;
-
 use nbdime_core::path::decimal_digit;
 use nbdime_core::prettyprint::repr_str;
 use nbdime_core::{Map, Value};
@@ -19,6 +17,8 @@ pub enum Nargs {
     Optional,
     /// `nargs='*'`.
     ZeroOrMore,
+    /// `nargs=PARSER`: a subcommand name and everything after it.
+    Parser,
 }
 
 /// What an action does with the strings it is given.
@@ -32,6 +32,8 @@ pub enum Kind {
     Store,
     /// Stores `true` (`store_true`).
     StoreTrue,
+    /// Stores the action's constant (`store_const`).
+    StoreConst,
     /// Stores `false` (`store_false`).
     StoreFalse,
     /// `IgnorableAction`: `-s`/`--sources` store true, `-S`/`--ignore-sources` store false.
@@ -49,6 +51,14 @@ pub struct Action {
     pub default: Value,
     pub choices: Option<Vec<&'static str>>,
     pub help: &'static str,
+    /// The value `store_const` stores.
+    pub const_value: Value,
+    /// A positional that is parsed and not stored (`SkipAction`).
+    pub skip: bool,
+    /// `type=int`: the value is converted, and a string that is not an integer is an error.
+    pub int: bool,
+    /// The title and description of the argument group the action is listed under in `--help`.
+    pub group: Option<(&'static str, &'static str)>,
 }
 
 impl Action {
@@ -60,6 +70,10 @@ impl Action {
             default,
             choices: None,
             help: "",
+            const_value: Value::Null,
+            skip: false,
+            int: false,
+            group: None,
         }
     }
 
@@ -87,17 +101,42 @@ impl Action {
         }
         positive.extend(negative);
         Action {
-            kind: Kind::Ignorable,
             option_strings: positive,
-            dest: dest.to_owned(),
-            default: Value::Null,
-            choices: None,
-            help: "",
+            ..Self::new(Kind::Ignorable, &[], dest, Value::Null)
+        }
+    }
+
+    /// `store_const`: the option stores `value` in `dest`.
+    pub fn constant(options: &[&str], dest: &str, value: Value) -> Self {
+        Action {
+            const_value: value,
+            ..Self::new(Kind::StoreConst, options, dest, Value::Null)
         }
     }
 
     pub fn positional(name: &str, nargs: Nargs, default: Value) -> Self {
         Self::new(Kind::Positional(nargs), &[], name, default)
+    }
+
+    /// An optional positional that is accepted and ignored (`SkipAction`). Its name in usage and
+    /// help texts is `==SUPPRESS==`, because that is its `dest`.
+    pub fn skipped() -> Self {
+        Action {
+            skip: true,
+            ..Self::positional("==SUPPRESS==", Nargs::Optional, Value::Null)
+        }
+    }
+
+    /// `type=int`.
+    pub fn int(mut self) -> Self {
+        self.int = true;
+        self
+    }
+
+    /// Lists the action under an argument group of `--help`.
+    pub fn group(mut self, title: &'static str, description: &'static str) -> Self {
+        self.group = Some((title, description));
+        self
     }
 
     pub fn choices(mut self, choices: &[&'static str]) -> Self {
@@ -139,6 +178,12 @@ pub enum ParseError {
     Usage(String),
     /// An action that ends the program successfully (or, for `--config`, with status 1).
     Exit(ExitRequest),
+    /// The program ends as a subcommand's parser says: that parser has already made the texts.
+    Done {
+        stdout: String,
+        stderr: String,
+        code: i32,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -171,10 +216,23 @@ impl Namespace {
     }
 }
 
+/// A group of options of which at most one may be given (`add_mutually_exclusive_group`).
+#[derive(Debug, Clone)]
+pub struct ExclusiveGroup {
+    /// Indices into the parser's actions.
+    pub members: Vec<usize>,
+    pub required: bool,
+}
+
 pub struct Parser {
     pub prog: String,
     pub description: &'static str,
+    /// `RawDescriptionHelpFormatter`: the description is printed as written.
+    pub raw_description: bool,
     actions: Vec<Action>,
+    groups: Vec<ExclusiveGroup>,
+    /// The parsers of the subcommands, by name.
+    subparsers: Vec<(&'static str, Parser)>,
     /// Defaults set with `set_defaults`; they override those of the actions.
     defaults: Map,
 }
@@ -194,7 +252,10 @@ impl Parser {
         let mut parser = Parser {
             prog: prog.to_owned(),
             description,
+            raw_description: false,
             actions: Vec::new(),
+            groups: Vec::new(),
+            subparsers: Vec::new(),
             defaults: Map::new(),
         };
         parser.add(
@@ -206,6 +267,54 @@ impl Parser {
 
     pub fn add(&mut self, action: Action) {
         self.actions.push(action);
+    }
+
+    pub(crate) fn actions(&self) -> &[Action] {
+        &self.actions
+    }
+
+    pub(crate) fn exclusive_groups(&self) -> &[ExclusiveGroup] {
+        &self.groups
+    }
+
+    /// `add_mutually_exclusive_group` with these options in it.
+    pub fn add_exclusive(&mut self, required: bool, actions: Vec<Action>) {
+        let first = self.actions.len();
+        let members = (first..first + actions.len()).collect();
+        self.actions.extend(actions);
+        self.groups.push(ExclusiveGroup { members, required });
+    }
+
+    /// `add_subparsers(dest=dest)`: the positional that takes a subcommand.
+    pub fn add_subparsers(&mut self, dest: &str) {
+        let mut action = Action::positional(dest, Nargs::Parser, Value::Null);
+        action.choices = Some(Vec::new());
+        self.actions.push(action);
+    }
+
+    /// `add_parser(name, ...)` on the subparsers action.
+    pub fn add_parser(&mut self, name: &'static str, parser: Parser) {
+        self.subparsers.push((name, parser));
+        if let Some(action) = self
+            .actions
+            .iter_mut()
+            .find(|a| a.kind == Kind::Positional(Nargs::Parser))
+        {
+            action.choices = Some(self.subparsers.iter().map(|(n, _)| *n).collect());
+        }
+    }
+
+    /// The parsers of all subcommands, for configuring them.
+    pub fn subparsers_mut(&mut self) -> impl Iterator<Item = &mut Parser> {
+        self.subparsers.iter_mut().map(|(_, p)| p)
+    }
+
+    /// The parser of a subcommand, for configuring it.
+    pub fn subparser_mut(&mut self, name: &str) -> Option<&mut Parser> {
+        self.subparsers
+            .iter_mut()
+            .find(|(n, _)| *n == name)
+            .map(|(_, p)| p)
     }
 
     /// `set_defaults`: also the default of every action that stores to a key given here.
@@ -337,7 +446,8 @@ impl Parser {
     ) -> Result<(Namespace, Vec<String>), ParseError> {
         let mut ns = Namespace::default();
         for action in &self.actions {
-            let stores = !matches!(action.kind, Kind::Help | Kind::Version | Kind::ConfigHelp);
+            let stores = !action.skip
+                && !matches!(action.kind, Kind::Help | Kind::Version | Kind::ConfigHelp);
             if stores && !ns.values.contains_key(&action.dest) {
                 ns.values
                     .insert(action.dest.clone(), action.default.clone());
@@ -348,33 +458,20 @@ impl Parser {
         }
         let mut state = ParseState::new(self, arg_strings, ns);
         state.run()?;
-        Ok((state.ns, state.extras))
+        let mut extras = state.extras;
+        extras.append(&mut state.sub_extras);
+        Ok((state.ns, extras))
     }
 
-    fn usage_text(&self) -> String {
-        let mut parts = vec![format!("usage: {}", self.prog)];
-        for a in self.actions.iter().filter(|a| !a.is_positional()) {
-            let first = &a.option_strings[0];
-            parts.push(if a.takes_value() {
-                format!("[{first} {}]", a.dest.to_uppercase())
-            } else {
-                format!("[{first}]")
-            });
-        }
-        for a in self.actions.iter().filter(|a| a.is_positional()) {
-            parts.push(match a.kind {
-                Kind::Positional(Nargs::Optional) => format!("[{}]", a.dest),
-                Kind::Positional(Nargs::ZeroOrMore) => format!("[{} ...]", a.dest),
-                _ => a.dest.clone(),
-            });
-        }
-        parts.join(" ")
+    /// The usage text, `usage: prog ...`, ending with a newline.
+    pub fn usage_text(&self) -> String {
+        crate::argparse_help::usage(self)
     }
 
     /// The text `parser.error(message)` prints on stderr.
     pub fn error_text(&self, message: &str) -> String {
         format!(
-            "{}\n{}: error: {}\n",
+            "{}{}: error: {}\n",
             self.usage_text(),
             self.prog,
             crate::osstr::show(message)
@@ -382,22 +479,41 @@ impl Parser {
     }
 
     pub fn help_text(&self) -> String {
-        let mut out = self.usage_text();
-        out.push_str("\n\n");
-        out.push_str(self.description);
-        out.push_str("\n\n");
-        for (title, positional) in [("positional arguments", true), ("options", false)] {
-            let _ = writeln!(out, "{title}:");
-            for a in self
-                .actions
-                .iter()
-                .filter(|a| a.is_positional() == positional)
-            {
-                let _ = writeln!(out, "  {}  {}", a.display_name(), a.help);
-            }
-            out.push('\n');
-        }
-        out
+        crate::argparse_help::help(self)
+    }
+}
+
+/// `int(text)`: optional sign, digits with single underscores between them, and surrounding
+/// whitespace.
+fn parse_int(text: &str) -> Option<Value> {
+    let text = text.trim_matches(nbdime_core::py::is_space);
+    let (negative, digits) = match text.strip_prefix('-') {
+        Some(rest) => (true, rest),
+        None => (false, text.strip_prefix('+').unwrap_or(text)),
+    };
+    let well_formed = !digits.is_empty()
+        && !digits.starts_with('_')
+        && !digits.ends_with('_')
+        && !digits.contains("__")
+        && digits
+            .chars()
+            .all(|c| c == '_' || decimal_digit(c).is_some());
+    if !well_formed {
+        return None;
+    }
+    let digits: String = digits
+        .chars()
+        .filter(|c| *c != '_')
+        .filter_map(|c| decimal_digit(c).and_then(|d| char::from_digit(d, 10)))
+        .collect();
+    let signed = if negative {
+        format!("-{digits}")
+    } else {
+        digits
+    };
+    match signed.parse::<i64>() {
+        Ok(n) => Some(Value::from(n)),
+        Err(_) => nbdime_core::json::parse(&signed).ok(),
     }
 }
 
@@ -425,7 +541,11 @@ struct ParseState<'a> {
     option_indices: Vec<(usize, Vec<OptionTuple>)>,
     ns: Namespace,
     extras: Vec<String>,
+    /// What the subcommand's parser did not recognize; reported after the parent's extras.
+    sub_extras: Vec<String>,
     seen: Vec<bool>,
+    /// Actions that were given on the command line (`seen_non_default_actions`).
+    given: Vec<bool>,
     /// Positionals not consumed yet (indices into `parser.actions`).
     positionals: Vec<usize>,
 }
@@ -464,7 +584,9 @@ impl<'a> ParseState<'a> {
             option_indices,
             ns,
             extras: Vec::new(),
+            sub_extras: Vec::new(),
             seen: vec![false; parser.actions.len()],
+            given: vec![false; parser.actions.len()],
             positionals,
         }
     }
@@ -517,6 +639,19 @@ impl<'a> ParseState<'a> {
                 "the following arguments are required: {}",
                 missing.join(", ")
             )));
+        }
+        for group in self.parser.groups.iter().filter(|g| g.required) {
+            if !group.members.iter().any(|i| self.given[*i]) {
+                let names: Vec<String> = group
+                    .members
+                    .iter()
+                    .map(|i| self.parser.actions[*i].display_name())
+                    .collect();
+                return Err(ParseError::Usage(format!(
+                    "one of the arguments {} is required",
+                    names.join(" ")
+                )));
+            }
         }
         Ok(())
     }
@@ -635,7 +770,14 @@ impl<'a> ParseState<'a> {
         for (n, &count) in counts.iter().enumerate() {
             let action = self.positionals[n];
             let mut args = self.args[index..index + count].to_vec();
-            if self.pattern[index..index + count].contains(&b'-') {
+            let is_parser = self.parser.actions[action].kind == Kind::Positional(Nargs::Parser);
+            // The first `--` is dropped; a subcommand only loses one in front of its name.
+            let dashes = if is_parser {
+                self.pattern.get(index) == Some(&b'-')
+            } else {
+                self.pattern[index..index + count].contains(&b'-')
+            };
+            if dashes {
                 if let Some(pos) = args.iter().position(|a| a == "--") {
                     args.remove(pos);
                 }
@@ -655,6 +797,34 @@ impl<'a> ParseState<'a> {
     ) -> Result<(), ParseError> {
         self.seen[index] = true;
         let action = self.parser.actions[index].clone();
+        if action.kind == Kind::Positional(Nargs::Parser) {
+            if let Some(name) = args.first() {
+                self.check_choice(index, &action, name)?;
+            }
+        }
+        if !action.option_strings.is_empty() || !args.is_empty() {
+            self.given[index] = true;
+            for group in self
+                .parser
+                .groups
+                .iter()
+                .filter(|g| g.members.contains(&index))
+            {
+                if let Some(other) = group
+                    .members
+                    .iter()
+                    .find(|m| **m != index && self.given[**m])
+                {
+                    return Err(self.argument_error(
+                        Some(index),
+                        &format!(
+                            "not allowed with argument {}",
+                            self.parser.actions[*other].display_name()
+                        ),
+                    ));
+                }
+            }
+        }
         match action.kind {
             Kind::Help => Err(ParseError::Exit(ExitRequest::Help)),
             Kind::Version => Err(ParseError::Exit(ExitRequest::Version)),
@@ -665,6 +835,10 @@ impl<'a> ParseState<'a> {
             }
             Kind::StoreFalse => {
                 self.ns.values.insert(action.dest, Value::Bool(false));
+                Ok(())
+            }
+            Kind::StoreConst => {
+                self.ns.values.insert(action.dest, action.const_value);
                 Ok(())
             }
             Kind::Ignorable => {
@@ -683,9 +857,21 @@ impl<'a> ParseState<'a> {
                 if action.dest == "log_level" {
                     self.ns.log_level = Some(value.clone());
                 }
-                self.ns.values.insert(action.dest, Value::Str(value));
+                let value = if action.int {
+                    parse_int(&value).ok_or_else(|| {
+                        self.argument_error(
+                            Some(index),
+                            &format!("invalid int value: {}", repr_str(&value)),
+                        )
+                    })?
+                } else {
+                    Value::Str(value)
+                };
+                self.ns.values.insert(action.dest, value);
                 Ok(())
             }
+            Kind::Positional(Nargs::Parser) => self.run_subparser(&action, args),
+            Kind::Positional(_) if action.skip => Ok(()),
             Kind::Positional(nargs) => {
                 let value = match (nargs, args) {
                     (Nargs::One, [one]) | (Nargs::Optional, [one]) => Value::Str(one.clone()),
@@ -703,6 +889,42 @@ impl<'a> ParseState<'a> {
                 Ok(())
             }
         }
+    }
+
+    /// `_SubParsersAction.__call__`: the subcommand's parser takes the rest of the arguments, and
+    /// what it parsed goes into the namespace.
+    fn run_subparser(&mut self, action: &Action, args: &[String]) -> Result<(), ParseError> {
+        let Some((name, rest)) = args.split_first() else {
+            return Ok(());
+        };
+        self.ns
+            .values
+            .insert(action.dest.clone(), Value::Str(name.clone()));
+        let parser = self.parser;
+        let Some((_, sub)) = parser.subparsers.iter().find(|(n, _)| n == name) else {
+            return Ok(());
+        };
+        let (sub_ns, extras) = sub.parse_known_args(rest).map_err(|error| match error {
+            ParseError::Usage(message) => ParseError::Done {
+                stdout: String::new(),
+                stderr: sub.error_text(&message),
+                code: 2,
+            },
+            ParseError::Exit(ExitRequest::Help) => ParseError::Done {
+                stdout: sub.help_text(),
+                stderr: String::new(),
+                code: 0,
+            },
+            other => other,
+        })?;
+        for (key, value) in sub_ns.values {
+            self.ns.values.insert(key, value);
+        }
+        if sub_ns.log_level.is_some() {
+            self.ns.log_level = sub_ns.log_level;
+        }
+        self.sub_extras.extend(extras);
+        Ok(())
     }
 
     fn check_choice(&self, index: usize, action: &Action, value: &str) -> Result<(), ParseError> {
@@ -771,6 +993,14 @@ fn candidate_ends(nargs: Nargs, pattern: &[u8], pos: usize) -> Vec<usize> {
         Nargs::ZeroOrMore => {
             let run = run_of(pos, &|c| c == b'A' || c == b'-');
             ends.extend((pos..=pos + run).rev());
+        }
+        Nargs::Parser => {
+            let lead = run_of(pos, &is_dash);
+            let after_lead = pos + lead;
+            if pattern.get(after_lead) == Some(&b'A') {
+                let rest = run_of(after_lead + 1, &|c| c == b'A' || c == b'-' || c == b'O');
+                ends.extend((after_lead + 1..=after_lead + 1 + rest).rev());
+            }
         }
         Nargs::One | Nargs::Optional => {
             let lead = run_of(pos, &is_dash);

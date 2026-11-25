@@ -4,7 +4,7 @@
 //! compares with what upstream nbdime returns for the same call.
 
 use anyhow::{anyhow, bail, Context, Result};
-use nbdime_core::diff_format::{diff_from_value, diff_to_value};
+use nbdime_core::diff_format::{diff_from_value, diff_into_value};
 use nbdime_core::diff_utils::{flatten_list_of_string_diff, StrOrLines};
 use nbdime_core::diffing::{
     self, snakes::compute_snakes_multilevel, NotebookDiffConfig, Predicate,
@@ -40,20 +40,18 @@ pub fn dispatch(name: &str, args: &Value) -> Result<Value> {
         "compare_strings_approximate" => compare_strings_approximate(args),
         "diff_strings_by_char" => {
             let (a, b) = (str_arg(args, "a")?, str_arg(args, "b")?);
-            Ok(diff_to_value(&diffing::diff_strings_by_char(a, b)))
+            Ok(diff_into_value(diffing::diff_strings_by_char(a, b)))
         }
         "diff_strings_linewise" => {
             let (a, b) = (str_arg(args, "a")?, str_arg(args, "b")?);
-            Ok(diff_to_value(&diffing::diff_strings_linewise(a, b)))
+            Ok(diff_into_value(diffing::diff_strings_linewise(a, b)))
         }
         "snakes_multilevel_lines" => snakes_multilevel_lines(args),
         "diff_sequence_bruteforce" => {
             let (a, b) = (list_arg(args, "a")?, list_arg(args, "b")?);
-            Ok(diff_to_value(&diffing::sequence::diff_sequence_bruteforce(
-                a,
-                b,
-                |x, y| x.py_eq(y),
-            )))
+            Ok(diff_into_value(
+                diffing::sequence::diff_sequence_bruteforce(a, b, |x, y| x.py_eq(y)),
+            ))
         }
         "patch" => {
             let diff = diff_from_value(arg(args, "diff")?)?;
@@ -64,7 +62,7 @@ pub fn dispatch(name: &str, args: &Value) -> Result<Value> {
         "nbformat.writes" => Ok(Value::from(nbformat::writes(arg(args, "nb")?)?)),
         "diff" => {
             let diff = diffing::diff(arg(args, "a")?, arg(args, "b")?)?;
-            Ok(diff_to_value(&diff))
+            Ok(diff_into_value(diff))
         }
         "diff_notebooks" => diff_notebooks(args),
         "decide_merge" => decide_merge(args),
@@ -93,7 +91,7 @@ fn notebook_diff_config(args: &Value) -> Result<NotebookDiffConfig> {
 fn diff_notebooks(args: &Value) -> Result<Value> {
     let config = notebook_diff_config(args)?;
     let diff = diffing::diff_notebooks(arg(args, "a")?, arg(args, "b")?, &config)?;
-    Ok(diff_to_value(&diff))
+    Ok(diff_into_value(diff))
 }
 
 /// `{strategies?: {path: name}, transients?: [path], fall_back?: name}`.
@@ -381,7 +379,7 @@ fn flatten(args: &Value) -> Result<Value> {
         }
         _ => bail!("argument \"a\" must be a string or a list of strings"),
     };
-    Ok(diff_to_value(&flat))
+    Ok(diff_into_value(flat))
 }
 
 fn list_arg<'a>(args: &'a Value, name: &str) -> Result<&'a [Value]> {

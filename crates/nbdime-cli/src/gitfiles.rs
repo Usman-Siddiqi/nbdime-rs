@@ -1,8 +1,7 @@
-//! Notebooks in git revisions (`nbdime.gitfiles`, `nbdime.vcs.git.filter_integration`).
+//! Notebooks in git revisions (`nbdime.gitfiles`).
 //!
 //! Upstream drives git through GitPython; here the same questions go to `git` subprocesses:
-//! `rev-parse` for revisions and the `diff` and `diff-tree` raw formats GitPython parses, and
-//! `check-attr` and `config` for clean filters.
+//! `rev-parse` for revisions and the `diff` and `diff-tree` raw formats GitPython parses.
 
 use std::fs;
 use std::io::Read;
@@ -408,78 +407,6 @@ fn parse_raw(output: &[u8]) -> Result<Vec<RawEntry>> {
     Ok(entries)
 }
 
-/// The clean filter configured for `git_path`, run over the file of the same name; `None` if no
-/// filter applies.
-fn apply_possible_filter(git_path: &str) -> Result<Option<Source>> {
-    let Some(attr) = interrogate_filter(git_path)? else {
-        return Ok(None);
-    };
-    let Some(command) = clean_filter_command(&attr) else {
-        return Ok(None);
-    };
-    let input = fs::File::open(osstr::to_path(git_path))
-        .with_context(|| format!("opening {}", osstr::show(git_path)))?;
-    // `shell=True` runs `/bin/sh`, whatever `sh` the PATH offers.
-    let output = Command::new("/bin/sh")
-        .arg("-c")
-        // Python merges the filter's stderr into its stdout.
-        .arg(osstr::to_os(&format!("exec 2>&1; {command}")))
-        .stdin(Stdio::from(input))
-        .output()
-        .context("running the git filter")?;
-    if !output.status.success() {
-        bail!("git filter {command:?} failed ({})", output.status);
-    }
-    Ok(Some(Source::Stream {
-        name: git_path.to_owned(),
-        text: String::from_utf8_lossy(&output.stdout).into_owned(),
-    }))
-}
-
-fn interrogate_filter(path: &str) -> Result<Option<String>> {
-    let Ok(output) = Command::new("git")
-        .args(["check-attr", "-z", "filter"])
-        .arg(osstr::to_os(path))
-        .stderr(Stdio::inherit())
-        .output()
-    else {
-        return Ok(None);
-    };
-    if !output.status.success() {
-        return Ok(None);
-    }
-    let parts: Vec<String> = output
-        .stdout
-        .split(|b| *b == 0)
-        .take(3)
-        .map(osstr::from_bytes)
-        .collect();
-    let [path_list, attr, info] = parts.as_slice() else {
-        return Ok(None);
-    };
-    if attr != "filter" || path_list != path {
-        bail!("Unexpected output from git check-attr: {path_list:?} {attr:?}");
-    }
-    Ok(match info.as_str() {
-        "" | "unspecified" | "set" | "unset" => None,
-        other => Some(other.to_owned()),
-    })
-}
-
-fn clean_filter_command(attr: &str) -> Option<String> {
-    let output = Command::new("git")
-        .args(["config", "--get", "-z"])
-        .arg(format!("filter.{attr}.clean"))
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let command = output.stdout.split(|b| *b == 0).next()?;
-    let command = String::from_utf8_lossy(command).into_owned();
-    (!command.is_empty()).then_some(command)
-}
-
 /// `_get_diff_entry_stream`: the notebook at `path` in `rev` (`None`: the working tree), the
 /// null file if it is absent there, or `None` if `path` is not a notebook.
 fn diff_entry_stream(
@@ -498,7 +425,7 @@ fn diff_entry_stream(
         // further entry. Timestamps and later files depend on it, so it is reproduced.
         std::env::set_current_dir(repo_dir)
             .with_context(|| format!("changing to {}", repo_dir.display()))?;
-        if let Some(filtered) = apply_possible_filter(path)? {
+        if let Some(filtered) = crate::filter_integration::filtered(path, path)? {
             return Ok(Some(filtered));
         }
         return Ok(Some(match fs::read(osstr::to_path(path)) {

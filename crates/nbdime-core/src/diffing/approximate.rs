@@ -5,7 +5,8 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::difflib::{
-    quick_ratio, quick_ratio_sorted, real_quick_ratio, PositionIndex, SequenceMatcher,
+    quick_ratio, quick_ratio_counted, real_quick_ratio, sorted_char_counts, PositionIndex,
+    SequenceMatcher,
 };
 use crate::py::py_len;
 use crate::value::{Hashable, Value};
@@ -30,7 +31,7 @@ pub(super) struct PreparedStr<'a> {
     /// `SequenceMatcher(self, other).ratio()` by the `id` of `other`.
     ratios: RefCell<HashMap<u64, f64>>,
     chars: OnceCell<Vec<char>>,
-    sorted_chars: OnceCell<Vec<char>>,
+    char_counts: OnceCell<Vec<(char, usize)>>,
     positions: OnceCell<PositionIndex<char>>,
 }
 
@@ -42,7 +43,7 @@ impl<'a> PreparedStr<'a> {
             len: py_len(text),
             ratios: RefCell::new(HashMap::new()),
             chars: OnceCell::new(),
-            sorted_chars: OnceCell::new(),
+            char_counts: OnceCell::new(),
             positions: OnceCell::new(),
         }
     }
@@ -64,12 +65,9 @@ impl<'a> PreparedStr<'a> {
         self.chars.get_or_init(|| self.text.chars().collect())
     }
 
-    fn sorted_chars(&self) -> &[char] {
-        self.sorted_chars.get_or_init(|| {
-            let mut sorted = self.chars().to_vec();
-            sorted.sort_unstable();
-            sorted
-        })
+    fn char_counts(&self) -> &[(char, usize)] {
+        self.char_counts
+            .get_or_init(|| sorted_char_counts(self.chars()))
     }
 
     fn positions(&self) -> &PositionIndex<char> {
@@ -97,7 +95,7 @@ impl<'a> PreparedStr<'a> {
         if maxlen.is_some_and(|maxlen| self.len > maxlen && y.len > maxlen) {
             return false;
         }
-        if quick_ratio_sorted(self.sorted_chars(), y.sorted_chars()) < threshold {
+        if quick_ratio_counted(self.char_counts(), y.char_counts(), self.len, y.len) < threshold {
             return false;
         }
         self.ratio(y) > threshold

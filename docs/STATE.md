@@ -1,6 +1,6 @@
 # Current state (compact; read this first on restart)
 
-Updated 2026-11-25 03:10 UTC. Details live in `docs/progress.md`, decisions in `docs/findings.md`.
+Updated 2026-11-25 17:00 UTC. Details live in `docs/progress.md`, decisions in `docs/findings.md`.
 
 ## Merged to main
 - U01–U05, U02 (JSON I/O, generic diff, patch, nbformat), U04 notebook diff, U10 merge engine,
@@ -9,24 +9,20 @@ Updated 2026-11-25 03:10 UTC. Details live in `docs/progress.md`, decisions in `
   upstream (F-022, F-023).
 - Enabled parity suites: `parity/enabled_suites.txt`.
 
-## In flight (resumed 2026-11-25 03:00 UTC, all in parallel)
-| Unit | Branch / worktree | Spec | Gate suite |
-|---|---|---|---|
-| U14 git drivers, config-git, nbpatch | `unit/u14`, `../wt/u14` | `docs/process/u14-git.md` | `test_cli_git.py` (+ `test_upstream_suite.py` report) |
-| U08 nbshow + Pygments lexer machinery | `unit/u08`, `../wt/u08` | `docs/process/u08-nbshow.md` | `test_cli_nbshow.py` |
-| U15 Python extension `nbdime_rs` | `unit/u15`, `../wt/u15` | `docs/process/u15-python.md` | `test_u15_python.py` |
-| P4 performance (json dump, is_base64, line alignment) | `unit/p4`, `../wt/p4` | `docs/process/p4-perf.md` | all enabled suites |
-After each: one hostile review (findings become parity cases), fix, gate, merge, enable suite.
-`test_upstream_suite.py` is enabled once U08 and U14 are both merged.
-Then: Phase 3 large differential runs (all suites, scale 4, several seeds), Phase 5 local
-upstream integration (`nbdime/_accel.py` per docs/design.md) once U15 is merged, then stop and ask.
+## Merged 2026-11-25 (weekly usage at 97%, so reviews were deferred)
+- U08 nbshow, P4 performance, U14 git drivers/config-git/nbpatch: gate passed on main
+  (106 parity tests incl. test_cli_git and test_upstream_suite). Their hostile reviews hit the
+  rate limit mid-run and are owed after the usage reset; review agents' work is saved.
 
-## Next
-- U08 nbshow/nbpatch (Pygments lexers; IPython environment question open).
-- U14 git drivers and filters (config-git, diff/merge driver).
-- U15 PyO3 package `nbdime_rs` (falls back to Python on engine error, F-017).
-- Phase 3 large differential runs, Phase 4 perf (json dump, is_base64, line alignment) and
-  README benchmarks, Phase 5 local upstream prep, then stop and ask.
+## Next (after the usage reset)
+1. Finish the U08, U14 and P4 hostile reviews; findings become parity cases, then fix.
+2. U15 (`unit/u15`): review done, SIGN-OFF no. Fix: circular refs must raise ValueError at once
+   (track container ptrs on the stack), dict mutated mid-conversion gives PanicException (catch
+   it, raise RuntimeError), dict/list subclasses must convert via items()/iteration like json,
+   wheel LICENSE + manylinux2014, run nbdime-py clippy and unit tests in the suite; smaller
+   items 7-13 and F-040/F-041/F-043 corrections. Add the regression tests to test_u15_python.py
+   first. Then gate, merge, enable.
+3. Phase 3 large differential runs; Phase 5 local upstream integration; then stop and ask.
 
 ## Workflow (owner instructions 2026-11-20 and 2026-11-25)
 - Fan out every unblocked unit at once, each in its own worktree; the orchestrator writes the

@@ -1,0 +1,46 @@
+{
+ "date": "2026-11-25T04:00:27",
+ "hardware": {
+  "machine": "x86_64",
+  "cpus": 4,
+  "platform": "Linux-6.18.44-fc-v880-x86_64-with-glibc2.39",
+  "cpu": "Intel(R) Xeon(R) Processor @ 2.10GHz",
+  "mem_kb": 16473316
+ },
+ "versions": {
+  "python": "3.13.18",
+  "nbdime": "4.0.4",
+  "nbformat": "5.11.1",
+  "nbdime_rs_git": "8937617"
+ },
+ "rs_bin": "/home/claude/wt/p4/target/release/nbdiff",
+ "runs": [
+  {
+   "case": "img-add",
+   "engine": "upstream-cli",
+   "times": [
+    1.4705024330000924
+   ],
+   "best": 1.4705024330000924,
+   "timed_out": false
+  },
+  {
+   "case": "img-identical",
+   "engine": "upstream-cli",
+   "times": [
+    1.9095998349998808
+   ],
+   "best": 1.9095998349998808,
+   "timed_out": false
+  },
+  {
+   "case": "reindent-repeat-250",
+   "engine": "upstream-cli",
+   "times": [
+    26.664553953999985
+   ],
+   "best": 26.664553953999985,
+   "timed_out": false
+  }
+ ]
+}

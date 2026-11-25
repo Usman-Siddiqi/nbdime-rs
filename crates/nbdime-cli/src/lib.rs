@@ -1,14 +1,23 @@
 //! Library half of the nbdime-rs command line tools.
 
 pub mod argparse;
+mod argparse_help;
 pub mod args;
 pub mod config;
 pub mod dev;
+pub mod diffdriver;
+pub mod difftool;
 pub mod dispatch;
+pub mod filter_integration;
+pub mod gitattributes;
 pub mod gitfiles;
 pub mod logging;
+pub mod mergedriver;
+pub mod mergetool;
 pub mod nbdiffapp;
 pub mod nbmergeapp;
+pub mod nbpatchapp;
+pub mod nbshowapp;
 pub mod osstr;
 pub mod pathexpand;
 pub mod revparse;
@@ -40,10 +49,13 @@ fn run_entry(entry: Entry, prog: &str, args: &[String]) -> i32 {
     let _ = out.flush();
     match result {
         Ok(Ok(code)) => code,
-        Ok(Err(error)) => {
-            osstr::eprint(&format!("{prog}: error: {error:#}\n"));
-            1
-        }
+        Ok(Err(error)) => match error.downcast_ref::<args::SystemExit>() {
+            Some(args::SystemExit(code)) => *code,
+            None => {
+                osstr::eprint(&format!("{prog}: error: {error:#}\n"));
+                1
+            }
+        },
         Err(_) => {
             osstr::eprint(&format!("{prog}: internal error\n"));
             1
@@ -101,8 +113,32 @@ pub fn nbmerge_main() -> i32 {
     run(nbmergeapp::main)
 }
 
+pub fn nbpatch_main() -> i32 {
+    run(nbpatchapp::main)
+}
+
+pub fn nbshow_main() -> i32 {
+    run(nbshowapp::main)
+}
+
 pub fn nbdime_main() -> i32 {
     run(dispatch::main)
+}
+
+pub fn git_nbdiffdriver_main() -> i32 {
+    run(diffdriver::main)
+}
+
+pub fn git_nbmergedriver_main() -> i32 {
+    run(mergedriver::main)
+}
+
+pub fn git_nbdifftool_main() -> i32 {
+    run(difftool::main)
+}
+
+pub fn git_nbmergetool_main() -> i32 {
+    run(mergetool::main)
 }
 
 #[cfg(test)]

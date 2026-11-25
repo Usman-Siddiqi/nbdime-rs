@@ -1,0 +1,85 @@
+{
+ "date": "2026-11-25T03:58:45",
+ "hardware": {
+  "machine": "x86_64",
+  "cpus": 4,
+  "platform": "Linux-6.18.44-fc-v880-x86_64-with-glibc2.39",
+  "cpu": "Intel(R) Xeon(R) Processor @ 2.10GHz",
+  "mem_kb": 16473316
+ },
+ "versions": {
+  "python": "3.13.18",
+  "nbdime": "4.0.4",
+  "nbformat": "5.11.1",
+  "nbdime_rs_git": "8937617"
+ },
+ "rs_bin": "/home/claude/wt/p4/target/release/nbdiff",
+ "runs": [
+  {
+   "case": "img-add",
+   "engine": "rs-cli",
+   "times": [
+    0.10669812800006184,
+    0.10831687300014892,
+    0.10214570299967818
+   ],
+   "best": 0.10214570299967818,
+   "timed_out": false
+  },
+  {
+   "case": "img-identical",
+   "engine": "rs-cli",
+   "times": [
+    0.09672340799988888,
+    0.09927394599981199,
+    0.10000822599977255
+   ],
+   "best": 0.09672340799988888,
+   "timed_out": false
+  },
+  {
+   "case": "reindent-lines-1000",
+   "engine": "rs-cli",
+   "times": [
+    0.21620222299998204,
+    0.20963041100003466,
+    0.2046896359997845
+   ],
+   "best": 0.2046896359997845,
+   "timed_out": false
+  },
+  {
+   "case": "reindent-repeat-250",
+   "engine": "rs-cli",
+   "times": [
+    0.017729812000197853,
+    0.014732782000010047,
+    0.014558018000116135
+   ],
+   "best": 0.014558018000116135,
+   "timed_out": false
+  },
+  {
+   "case": "reindent-repeat-500",
+   "engine": "rs-cli",
+   "times": [
+    0.04827501800036771,
+    0.04867403699972783,
+    0.04883922299995902
+   ],
+   "best": 0.04827501800036771,
+   "timed_out": false
+  },
+  {
+   "case": "reindent-repeat-1000",
+   "engine": "rs-cli",
+   "times": [
+    0.18584508799995092,
+    0.20480528000007325,
+    0.18961087900015627
+   ],
+   "best": 0.18584508799995092,
+   "timed_out": false
+  }
+ ]
+}

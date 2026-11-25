@@ -13,3 +13,10 @@ merged, decisions = nbdime_rs.merge_notebooks(base, local, remote)
 Arguments and results are plain `dict`, `list`, `str`, `int`, `float`, `bool` and `None`
 (subclasses such as `nbformat.NotebookNode` are accepted); anything else raises `TypeError`.
 Engine failures raise `nbdime_rs.EngineError`. The GIL is released while the engine runs.
+
+To build a Linux wheel for glibc 2.17 and later, run this from `crates/nbdime-py` with maturin and
+Zig installed.
+
+```sh
+maturin build --release --compatibility manylinux2014 --zig
+```

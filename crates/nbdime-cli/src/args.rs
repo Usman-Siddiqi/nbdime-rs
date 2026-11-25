@@ -181,17 +181,22 @@ pub fn apply_config(
     Ok(())
 }
 
-/// `process_exclusive_ignorables`: all given ignorables must be positive or all negative; the
-/// others get the opposite. Returns whether any was given.
+/// `process_exclusive_ignorables` for all of the `diff_ignorables`.
 pub fn process_exclusive_ignorables(ns: &mut Namespace) -> Result<bool> {
+    process_exclusive_names(ns, &DIFF_IGNORABLES)
+}
+
+/// `process_exclusive_ignorables(ns, names)`: all given ignorables must be positive or all
+/// negative; the others get the opposite. Returns whether any was given.
+pub fn process_exclusive_names(ns: &mut Namespace, names: &[&str]) -> Result<bool> {
     let value = |ns: &Namespace, name: &str| ns.get(name).cloned().unwrap_or(Value::Null);
-    let mut toggle = value(ns, DIFF_IGNORABLES[0]);
-    for name in &DIFF_IGNORABLES[1..] {
+    let mut toggle = value(ns, names[0]);
+    for name in &names[1..] {
         let opt = value(ns, name);
         if toggle == Value::Null {
             toggle = opt;
         } else if !toggle.py_eq(&opt) && opt != Value::Null {
-            bail!("Arguments must either all be negative or all positive: {DIFF_IGNORABLES:?}");
+            bail!("Arguments must either all be negative or all positive: {names:?}");
         }
     }
     let default = if toggle == Value::Null {
@@ -199,9 +204,9 @@ pub fn process_exclusive_ignorables(ns: &mut Namespace) -> Result<bool> {
     } else {
         !toggle.truthy()
     };
-    for name in DIFF_IGNORABLES {
+    for name in names {
         if value(ns, name) == Value::Null {
-            ns.values.insert(name.to_owned(), Value::Bool(default));
+            ns.values.insert((*name).to_owned(), Value::Bool(default));
         }
     }
     Ok(toggle != Value::Null)

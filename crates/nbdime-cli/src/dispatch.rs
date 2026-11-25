@@ -7,7 +7,7 @@ use anyhow::{bail, Context as _, Result};
 
 use crate::args::{config_listing, ListingError};
 use crate::config::{Context, ENTRYPOINTS};
-use crate::{nbdiffapp, nbmergeapp, osstr, VERSION};
+use crate::{nbdiffapp, nbmergeapp, nbshowapp, osstr, VERSION};
 
 const COMMANDS: [&str; 8] = [
     "show",
@@ -49,6 +49,7 @@ pub fn run(ctx: &Context, prog: &str, args: &[String], out: &mut dyn Write) -> R
         return exit_with(&format!("Option missing.\n\n{}", help_message()));
     };
     match command.as_str() {
+        "show" => nbshowapp::run(ctx, prog, rest, out),
         "diff" => nbdiffapp::run(ctx, prog, rest, out),
         "merge" => nbmergeapp::run(ctx, prog, rest, out),
         "mergetool" => mergetool(rest),
@@ -67,7 +68,7 @@ pub fn run(ctx: &Context, prog: &str, args: &[String], out: &mut dyn Write) -> R
             }
             Ok(1)
         }
-        "show" | "diff-web" | "merge-web" | "server" | "config-git" => exit_with(&format!(
+        "diff-web" | "merge-web" | "server" | "config-git" => exit_with(&format!(
             "nbdime-rs does not provide the '{command}' command yet."
         )),
         other => exit_with(&format!(

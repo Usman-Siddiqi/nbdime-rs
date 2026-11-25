@@ -117,6 +117,8 @@ def test_cli_nbshow_special_inputs(sandbox):
     v3.write_text(json.dumps({"nbformat": 3, "nbformat_minor": 0, "metadata": {}, "worksheets": []}))
     cases = [
         {"cmd": "nbshow", "args": []},
+        {"cmd": "nbshow", "args": ["--help"]},
+        {"cmd": "nbdime show", "args": ["--help"]},
         {"cmd": "nbshow", "args": ["-"], "stdin": Path(some).read_bytes()},
         {"cmd": "nbshow", "args": ["-"], "stdin": b""},
         {"cmd": "nbshow", "args": [some, str(root / "missing.ipynb")]},

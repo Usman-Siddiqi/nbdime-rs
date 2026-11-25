@@ -199,6 +199,7 @@ mod tests {
         assert_eq!(whole(r"é\b", "é.").as_deref(), Some("é"));
         assert!(groups(r"é\b", "éa", 0).is_none());
         assert!(groups(r"a\B", "ab", 0).is_some());
+        assert!(groups(r"\B", "", 0).is_none());
         assert!(groups(r"\bx", "x", 0).is_some());
     }
 
@@ -250,12 +251,18 @@ mod tests {
         assert!(groups("(?i)(r[ft]|[ft]r)(\"\"\")", "Rf\"\"\"", 0).is_some());
         assert!(groups("(?i:a)b", "Ab", 0).is_some());
         assert!(groups("(?i:a)b", "AB", 0).is_none());
+        assert!(groups("(?i)[a-z]", "\u{130}", 0).is_some());
         assert!(groups("(?s:.)x", "\nx", 0).is_some());
         assert!(groups(".x", "\nx", 0).is_none());
     }
 
     #[test]
     fn verbose_patterns_with_named_groups_and_a_lazy_dot_all_body() {
+        assert_eq!(
+            whole("(?x)a\u{a0}b", "a\u{a0}b").as_deref(),
+            Some("a\u{a0}b")
+        );
+        assert!(whole("(?x)a\u{a0}b", "ab").is_none());
         let pattern = "(?x)\n  ^(?P<initial>\\s*```)\n  (?P<lang>[\\w\\-]+)\n  (?P<afterlang>\n     (?P<whitespace>[^\\S\\n]+)\n     (?P<extra>.*))?\n  (?P<newline>\\n)\n  (?P<code>([\\s\\S])*?)\n  (?P<terminator>^\\s*```$\\n)\n  ";
         let regex = Regex::new(pattern, flags()).unwrap();
         let mut scratch = Scratch::default();

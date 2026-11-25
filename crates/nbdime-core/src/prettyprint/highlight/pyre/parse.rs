@@ -176,7 +176,7 @@ impl Parser {
             return;
         }
         while let Some(c) = self.peek() {
-            if c.is_whitespace() {
+            if matches!(c, ' ' | '\t' | '\n' | '\r' | '\x0b' | '\x0c') {
                 self.pos += 1;
             } else if c == '#' {
                 while let Some(c) = self.next() {

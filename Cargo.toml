@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
 members = ["crates/nbdime-core", "crates/nbdime-cli", "crates/nbdime-py"]
-default-members = ["crates/nbdime-core", "crates/nbdime-cli", "crates/nbdime-py"]
+default-members = ["crates/nbdime-core", "crates/nbdime-cli"]
 
 [workspace.package]
 version = "0.1.0"

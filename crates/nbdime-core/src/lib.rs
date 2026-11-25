@@ -13,6 +13,7 @@ pub mod json;
 pub mod log;
 pub mod merging;
 pub mod nbformat;
+pub mod options;
 pub mod patch;
 pub mod path;
 pub mod prettyprint;

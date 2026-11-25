@@ -7,12 +7,13 @@ use anyhow::{anyhow, bail, Context, Result};
 use nbdime_core::diff_format::{diff_from_value, diff_to_value};
 use nbdime_core::diff_utils::{flatten_list_of_string_diff, StrOrLines};
 use nbdime_core::diffing::{
-    self, snakes::compute_snakes_multilevel, NotebookDiffConfig, Predicate, Targets,
+    self, snakes::compute_snakes_multilevel, NotebookDiffConfig, Predicate,
 };
 use nbdime_core::difflib::SequenceMatcher;
 use nbdime_core::json::{self, DumpOptions};
-use nbdime_core::merging::{self, MergeArgs, MergeDecision, Strategies};
+use nbdime_core::merging::{self, MergeArgs, Strategies};
 use nbdime_core::nbformat;
+use nbdime_core::options;
 use nbdime_core::patch::patch;
 use nbdime_core::prettyprint::{render, PrettyPrintConfig, Printer};
 use nbdime_core::{Int, Value};
@@ -81,50 +82,11 @@ pub fn dispatch(name: &str, args: &Value) -> Result<Value> {
     }
 }
 
-/// The notebook differ configured by the `ignores` and `targets` arguments: ignores apply
-/// first, in object order, then the targets. Both may be null, like an absent key. `targets` has
-/// the keyword arguments of `set_notebook_diff_targets`: absent ones are true and unknown ones
-/// are an error.
 fn notebook_diff_config(args: &Value) -> Result<NotebookDiffConfig> {
-    let mut config = NotebookDiffConfig::new();
-    match args.get("ignores") {
-        None | Some(Value::Null) => {}
-        Some(Value::Object(ignores)) => {
-            let ignores: Vec<_> = ignores
-                .iter()
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect();
-            config.set_ignores(&ignores)?;
-        }
-        Some(_) => bail!("ignores must be an object"),
-    }
-    match args.get("targets") {
-        None | Some(Value::Null) => {}
-        Some(Value::Object(targets)) => {
-            const NAMES: [&str; 6] = [
-                "sources",
-                "outputs",
-                "attachments",
-                "metadata",
-                "identifier",
-                "details",
-            ];
-            if let Some(unknown) = targets.keys().find(|k| !NAMES.contains(&k.as_str())) {
-                bail!("unexpected target {unknown:?}");
-            }
-            let flag = |name: &str| targets.get(name).is_none_or(Value::truthy);
-            config.set_targets(&Targets {
-                sources: flag("sources"),
-                outputs: flag("outputs"),
-                attachments: flag("attachments"),
-                metadata: flag("metadata"),
-                identifier: flag("identifier"),
-                details: flag("details"),
-            });
-        }
-        Some(_) => bail!("targets must be an object"),
-    }
-    Ok(config)
+    Ok(options::notebook_diff_config(
+        args.get("ignores"),
+        args.get("targets"),
+    )?)
 }
 
 /// `{a, b, ignores?, targets?}`.
@@ -136,42 +98,11 @@ fn diff_notebooks(args: &Value) -> Result<Value> {
 
 /// `{strategies?: {path: name}, transients?: [path], fall_back?: name}`.
 fn strategies_arg(args: &Value) -> Result<Strategies> {
-    let mut strategies = Strategies::new();
-    match args.get("strategies") {
-        None | Some(Value::Null) => {}
-        Some(Value::Object(map)) => {
-            for (path, name) in map {
-                let name = match name {
-                    Value::Null => None,
-                    other => Some(other.as_str().context("strategy names must be strings")?),
-                };
-                strategies.insert(path, name);
-            }
-        }
-        Some(_) => bail!("strategies must be an object"),
-    }
-    match args.get("transients") {
-        None | Some(Value::Null) => {}
-        Some(Value::List(paths)) => {
-            for path in paths {
-                strategies.transients.push(
-                    path.as_str()
-                        .context("transients must be strings")?
-                        .to_owned(),
-                );
-            }
-        }
-        Some(_) => bail!("transients must be a list"),
-    }
-    strategies.fall_back = args
-        .get("fall_back")
-        .and_then(Value::as_str)
-        .map(str::to_owned);
-    Ok(strategies)
-}
-
-fn decisions_to_value(decisions: &[MergeDecision]) -> Value {
-    Value::List(decisions.iter().map(MergeDecision::to_value).collect())
+    Ok(options::strategies(
+        args.get("strategies"),
+        args.get("transients"),
+        args.get("fall_back"),
+    )?)
 }
 
 /// `{base, local, remote, strategies?, transients?, fall_back?}`.
@@ -182,7 +113,7 @@ fn decide_merge(args: &Value) -> Result<Value> {
         arg(args, "remote")?,
         &strategies_arg(args)?,
     )?;
-    Ok(decisions_to_value(&decisions))
+    Ok(merging::decisions_to_value(&decisions))
 }
 
 /// `decide_merge` with the diffs `local_diff` and `remote_diff` given.
@@ -195,46 +126,17 @@ fn decide_merge_with_diff(args: &Value) -> Result<Value> {
         &diff_from_value(arg(args, "remote_diff")?)?,
         &strategies_arg(args)?,
     )?;
-    Ok(decisions_to_value(&decisions))
+    Ok(merging::decisions_to_value(&decisions))
 }
 
 /// `{base, decisions}`.
 fn apply_decisions(args: &Value) -> Result<Value> {
-    let decisions = list_arg(args, "decisions")?
-        .iter()
-        .map(MergeDecision::from_value)
-        .collect::<Result<Vec<_>, _>>()?;
+    let decisions = merging::decisions_from_values(list_arg(args, "decisions")?)?;
     Ok(merging::apply_decisions(arg(args, "base")?, &decisions)?)
 }
 
-/// `args`: the merge options, null or absent for the defaults; absent keys take the defaults.
 fn merge_args(args: &Value) -> Result<Option<MergeArgs>> {
-    let given = match args.get("args") {
-        None | Some(Value::Null) => return Ok(None),
-        Some(Value::Object(given)) => given,
-        Some(_) => bail!("args must be an object"),
-    };
-    let optional = |name: &str| -> Result<Option<String>> {
-        match given.get(name) {
-            None | Some(Value::Null) => Ok(None),
-            Some(Value::Str(s)) => Ok(Some(s.clone())),
-            Some(_) => bail!("{name} must be a string or null"),
-        }
-    };
-    let defaults = MergeArgs::default();
-    Ok(Some(MergeArgs {
-        // An explicit null is Python's `None`, not the default.
-        merge_strategy: if given.contains_key("merge_strategy") {
-            optional("merge_strategy")?
-        } else {
-            defaults.merge_strategy
-        },
-        input_strategy: optional("input_strategy")?,
-        output_strategy: optional("output_strategy")?,
-        ignore_transients: given
-            .get("ignore_transients")
-            .map_or(defaults.ignore_transients, Value::truthy),
-    }))
+    Ok(options::merge_args(args.get("args"))?)
 }
 
 /// `{base, local, remote, args?, ignores?, targets?}`.
@@ -246,7 +148,7 @@ fn decide_notebook_merge(args: &Value) -> Result<Value> {
         merge_args(args)?.as_ref(),
         &notebook_diff_config(args)?,
     )?;
-    Ok(decisions_to_value(&decisions))
+    Ok(merging::decisions_to_value(&decisions))
 }
 
 /// `decide_notebook_merge`, returning `[merged, decisions]`.
@@ -258,7 +160,10 @@ fn merge_notebooks(args: &Value) -> Result<Value> {
         merge_args(args)?.as_ref(),
         &notebook_diff_config(args)?,
     )?;
-    Ok(Value::List(vec![merged, decisions_to_value(&decisions)]))
+    Ok(Value::List(vec![
+        merged,
+        merging::decisions_to_value(&decisions),
+    ]))
 }
 
 /// `{pred, x, y}` with the default notebook configuration.

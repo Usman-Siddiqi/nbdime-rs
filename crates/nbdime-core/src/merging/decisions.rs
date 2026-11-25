@@ -1102,6 +1102,16 @@ fn cmp_int_float(i: &crate::value::Int, f: f64) -> Option<Ordering> {
     })
 }
 
+/// The decisions in their JSON form.
+pub fn decisions_to_value(decisions: &[MergeDecision]) -> Value {
+    Value::List(decisions.iter().map(MergeDecision::to_value).collect())
+}
+
+/// Reads decisions from their JSON form.
+pub fn decisions_from_values(values: &[Value]) -> Result<Vec<MergeDecision>, MergeError> {
+    values.iter().map(MergeDecision::from_value).collect()
+}
+
 /// Applies a list of decisions to `base`.
 pub fn apply_decisions(base: &Value, decisions: &[MergeDecision]) -> Result<Value, MergeError> {
     /// The diffs collected for one path, applied together.

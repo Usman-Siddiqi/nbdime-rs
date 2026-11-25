@@ -79,6 +79,23 @@ pub fn quick_ratio<T: Eq + Hash>(a: &[T], b: &[T]) -> f64 {
     calculate_ratio(matches, a.len() + b.len())
 }
 
+/// [`quick_ratio`] of two sequences that are already sorted, which needs no hashing.
+pub fn quick_ratio_sorted<T: Ord>(a_sorted: &[T], b_sorted: &[T]) -> f64 {
+    let (mut i, mut j, mut matches) = (0, 0, 0);
+    while i < a_sorted.len() && j < b_sorted.len() {
+        match a_sorted[i].cmp(&b_sorted[j]) {
+            Ordering::Less => i += 1,
+            Ordering::Greater => j += 1,
+            Ordering::Equal => {
+                matches += 1;
+                i += 1;
+                j += 1;
+            }
+        }
+    }
+    calculate_ratio(matches, a_sorted.len() + b_sorted.len())
+}
+
 /// The distinct elements of a sequence with their numbers of occurrences, by ascending
 /// element; what [`quick_ratio_counted`] needs of a sequence.
 pub fn sorted_counts<T: Ord + Clone>(sequence: &[T]) -> Vec<(T, usize)> {
@@ -645,6 +662,11 @@ mod tests {
         let (a, b) = (chars("aaab"), chars("abbb"));
         // a: min(3, 1) = 1, b: min(1, 3) = 1.
         assert_eq!(quick_ratio(&a, &b), 2.0 * 2.0 / 8.0);
+        assert_eq!(
+            quick_ratio_sorted(&['a', 'a', 'b'], &['a', 'b', 'b']),
+            2.0 / 3.0
+        );
+        assert_eq!(quick_ratio_sorted::<char>(&[], &[]), 1.0);
     }
 
     #[test]

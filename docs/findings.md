@@ -532,3 +532,47 @@ doubled final newline, and a common last line that is repeated after the conflic
   on Windows sometimes add one (deliberate deviation). The JSON layer itself rejects it, like `json.loads`; the notebook reader
   (U02) decides.
 - **Q-003** (decided 2026-11-19): v4 only, see F-012.
+
+### F-040: Python object conversion (U15)
+- `nbdime_rs` reads Python objects directly into `Value`: `dict` with `str` keys, `list`, `str`,
+  `int`, `float`, `bool`, `None`, and subclasses of those (`NotebookNode`, `OrderedDict`, `IntEnum`).
+  Dicts, lists and strings are read through the C-level iteration, so overridden `items()`,
+  `__iter__` or `__str__` methods of a subclass are not consulted (as the `json` C encoder does).
+  Everything else, tuples and non-`str` dict keys included, is a `TypeError` naming the type.
+- Lone surrogates in a `str` are a `ValueError` (F-005). Integers beyond `i64` go through
+  `int.__repr__`, so the Python 3.11 limit of 4300 digits applies (`ValueError`), as in F-010.
+- Nesting deeper than 10,000 levels (`json.loads` makes 9,998) is a `ValueError`, which also stops
+  circular references; the diff limit of F-009 (500) is an `EngineError` as before. Both
+  conversions and the disposal of converted values use explicit stacks, so no input depth
+  overflows a native stack (F-011 notwithstanding: the core's own recursion needs a big stack).
+- Results are plain `dict`/`list`; `merge_notebooks` returns a `tuple` `(merged, decisions)`.
+
+### F-041: threads and the GIL in `nbdime_rs` (U15)
+- The core runs with the GIL released (`Python::detach`). Data nested up to 24 levels (real
+  notebooks reach about 8) runs on the calling thread; deeper data runs on a scoped worker thread
+  with a 32 MB stack, because the core recurses once per nesting
+  level (F-009, F-011) and Python threads can have stacks as small as 512 KB. Starting the worker
+  costs about 30 microseconds (glibc caches stacks up to 40 MB; larger ones cost about 400 with
+  the unmap), which only deep input pays. 32 MB fits merges of 500-level documents.
+- Engine errors and panics become `EngineError` (`panic: ...` for the latter); nothing unwinds
+  into the interpreter. A stack overflow would abort the process, which the depth bounds prevent.
+- The notebook differ configuration is built per call from `ignores`/`targets`; there is no
+  module state, so calls from several threads cannot interfere.
+
+### F-042: argument decoding is shared (U15)
+`nbdime_core::options` decodes `ignores`, `targets`, `strategies`/`transients`/`fall_back` and
+the merge `args` for both `nbdime-rs-dev` and `nbdime_rs`; the dev tool's behaviour and messages
+are unchanged. Decisions convert with `merging::decisions_to_value` / `decisions_from_values`.
+
+### F-043: packaging notes (U15)
+- maturin 1.16 lays the wheel out as a package: `nbdime_rs/__init__.py` (a generated
+  `from .nbdime_rs import *` shim) and `nbdime_rs/nbdime_rs.abi3.so`, even with no Python sources
+  in the repository; `import nbdime_rs` and `nbdime_rs.EngineError.__module__` are as specified.
+  The repository itself holds no Python files.
+- `cargo test -p nbdime-py` must run with `--no-default-features` and `PYO3_PYTHON` set: the
+  default `extension-module` feature leaves libpython unlinked, which a test binary needs.
+- `parity/test_u15_python.py::test_u15_suites_through_the_python_api` runs its inner pytest with
+  `-q` from `parity/`, where `pytest.ini` already adds `-q`; the doubled `-q` drops the final
+  `N passed` line, so its `" passed" in p.stdout` assertion cannot hold. The inner run itself
+  passes (49 passed, exit 0, 54,000 calls answered by the extension); noted for the orchestrator,
+  since `parity/` is protected.

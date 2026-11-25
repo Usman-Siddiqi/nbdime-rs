@@ -2,10 +2,6 @@
 //! objects. Arguments and results have the shapes of the `nbdime-rs-dev` functions of the same
 //! names.
 
-// The `#[pyfunction]` and `#[pymodule]` expansions contain `unsafe` FFI glue; this crate itself
-// has none.
-#![allow(unsafe_code)]
-
 mod convert;
 mod run;
 
@@ -15,7 +11,7 @@ use pyo3::create_exception;
 use pyo3::exceptions::PyException;
 use pyo3::prelude::*;
 
-use convert::{from_py, to_py, Doc};
+use convert::{from_ignores, from_py, to_py, Doc};
 use run::run;
 
 create_exception!(
@@ -25,8 +21,18 @@ create_exception!(
     "The engine could not diff, patch or merge the given documents."
 );
 
-fn optional(arg: Option<&Bound<'_, PyAny>>) -> PyResult<Option<Doc>> {
-    arg.map(from_py).transpose()
+fn dict_option(
+    name: &str,
+    arg: Option<&Bound<'_, PyAny>>,
+    convert: fn(&Bound<'_, PyAny>) -> PyResult<Doc>,
+) -> PyResult<Option<Doc>> {
+    let Some(arg) = arg.filter(|arg| !arg.is_none()) else {
+        return Ok(None);
+    };
+    if arg.cast::<pyo3::types::PyDict>().is_err() {
+        return Err(EngineError::new_err(format!("{name} must be a dict")));
+    }
+    convert(arg).map(Some)
 }
 
 fn value(doc: &Option<Doc>) -> Option<&Value> {
@@ -70,7 +76,7 @@ fn patch<'py>(
 }
 
 /// The diff of two notebooks (`diff_notebooks`) with the differ configured by `ignores` (a dict
-/// of path to `True`, `False` or a list of keys) and `targets` (a dict of the keyword arguments
+/// of path to `True`, `False` or a collection of keys) and `targets` (a dict of the keyword arguments
 /// of `set_notebook_diff_targets`).
 #[pyfunction]
 #[pyo3(signature = (a, b, *, ignores=None, targets=None))]
@@ -82,7 +88,8 @@ fn diff_notebooks<'py>(
     targets: Option<&Bound<'py, PyAny>>,
 ) -> PyResult<Bound<'py, PyAny>> {
     let (a, b) = (from_py(a)?, from_py(b)?);
-    let (ignores, targets) = (optional(ignores)?, optional(targets)?);
+    let ignores = dict_option("ignores", ignores, from_ignores)?;
+    let targets = dict_option("targets", targets, from_py)?;
     let depth = nesting(&[
         Some(a.depth()),
         Some(b.depth()),
@@ -111,9 +118,9 @@ fn decide_merge<'py>(
 ) -> PyResult<Bound<'py, PyAny>> {
     let (base, local, remote) = (from_py(base)?, from_py(local)?, from_py(remote)?);
     let (strategies, transients, fall_back) = (
-        optional(strategies)?,
-        optional(transients)?,
-        optional(fall_back)?,
+        dict_option("strategies", strategies, from_py)?,
+        transients.map(from_py).transpose()?,
+        fall_back.map(from_py).transpose()?,
     );
     let depth = nesting(&[
         Some(base.depth()),
@@ -222,13 +229,27 @@ impl NotebookMerge {
         ignores: Option<&Bound<'_, PyAny>>,
         targets: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Self> {
+        let args = dict_option("args", args, from_py)?;
+        if let Some(Value::Object(options)) = value(&args) {
+            let known = [
+                "merge_strategy",
+                "input_strategy",
+                "output_strategy",
+                "ignore_transients",
+            ];
+            if let Some(key) = options.keys().find(|key| !known.contains(&key.as_str())) {
+                return Err(EngineError::new_err(format!(
+                    "unexpected merge argument {key:?}"
+                )));
+            }
+        }
         Ok(NotebookMerge {
             base: from_py(base)?,
             local: from_py(local)?,
             remote: from_py(remote)?,
-            args: optional(args)?,
-            ignores: optional(ignores)?,
-            targets: optional(targets)?,
+            args,
+            ignores: dict_option("ignores", ignores, from_ignores)?,
+            targets: dict_option("targets", targets, from_py)?,
         })
     }
 

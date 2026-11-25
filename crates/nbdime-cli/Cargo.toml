@@ -25,6 +25,10 @@ name = "nbmerge"
 path = "src/bin/nbmerge.rs"
 
 [[bin]]
+name = "nbpatch"
+path = "src/bin/nbpatch.rs"
+
+[[bin]]
 name = "git-nbdiffdriver"
 path = "src/bin/git-nbdiffdriver.rs"
 

@@ -8,6 +8,7 @@ including the repository files the commands write (.git/config, attributes, merg
 """
 
 import json
+import os
 import subprocess
 
 from gen import rng_for
@@ -143,6 +144,26 @@ def test_cli_git_diff_driver_filters(sandbox):
                     "*.ipynb\tdiff=jupyternotebook filter=%s\n" % flt)
             cases += [git_case(setup, a) for a in (["diff"], ["diff", "HEAD"])]
     check_cli(cases, root, env, min_cases=len(cases))
+
+
+def test_cli_git_diff_driver_filter_paths_and_diagnostics(sandbox):
+    root, env = sandbox
+    notebook = '{"cells": [], "metadata": {}, "nbformat": 4, "nbformat_minor": 5}'
+
+    def setup(d):
+        plain_repo(env)(d)
+        (d / "a.ipynb").write_text(notebook)
+        (d / ".git" / "info" / "attributes").write_text("*.ipynb filter=test\n")
+        (d / "bad-config").write_text("[not a config\n")
+
+    def case(path, **options):
+        return {"cmd": "git-nbdiffdriver", "setup": setup, **options,
+                "args": ["diff", "--use-filter", path, "a.ipynb", "0", "100644",
+                         "a.ipynb", "0", "100644"]}
+
+    cases = [case(os.fsdecode(b"a\xff.ipynb")),
+             case("a.ipynb", env={"GIT_CONFIG": "{dir}/bad-config"})]
+    check_cli(cases, root, env, min_cases=2)
 
 
 def test_cli_git_merge_driver(sandbox):

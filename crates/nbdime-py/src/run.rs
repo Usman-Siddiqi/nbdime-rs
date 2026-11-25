@@ -2,7 +2,6 @@
 
 use std::error::Error;
 use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::thread;
 
 use pyo3::prelude::*;
 
@@ -10,34 +9,26 @@ use crate::EngineError;
 
 pub type Failure = Box<dyn Error + Send + Sync>;
 
-/// Stack for the worker thread that runs deeply nested input (F-009, F-011); sized below glibc's
-/// 40 MB stack cache, so starting a worker stays cheap.
-const WORKER_STACK: usize = 32 << 20;
+/// Stack space for deeply nested input (F-009, F-011).
+const ENGINE_STACK: usize = 32 << 20;
 
-/// Nesting up to which the engine runs on the calling thread, whose stack may be small
-/// (a few hundred KB for Python threads on some platforms). Real notebooks nest about 8 deep.
+/// Shallow input can use the existing stack if it has enough space.
 const INLINE_DEPTH: usize = 24;
+const INLINE_STACK: usize = 512 << 10;
 
-/// Runs `work` without the GIL, on a large-stack thread if the data nests deeper than
-/// [`INLINE_DEPTH`]. Failures and panics become `EngineError`.
+/// Runs `work` without the GIL, switching stacks for deep input or low remaining stack space.
+/// Failures and panics become `EngineError`.
 pub fn run<T: Send>(
     py: Python<'_>,
     depth: usize,
     work: impl FnOnce() -> Result<T, Failure> + Send,
 ) -> PyResult<T> {
     let outcome = py.detach(|| {
-        if depth <= INLINE_DEPTH {
-            return guarded(work);
-        }
-        thread::scope(|scope| {
-            match thread::Builder::new()
-                .stack_size(WORKER_STACK)
-                .spawn_scoped(scope, || guarded(work))
-            {
-                Ok(worker) => worker
-                    .join()
-                    .unwrap_or_else(|_| Err("the worker thread failed".into())),
-                Err(e) => Err(format!("cannot start the worker thread: {e}")),
+        guarded(|| {
+            if depth > INLINE_DEPTH {
+                stacker::grow(ENGINE_STACK, work)
+            } else {
+                stacker::maybe_grow(INLINE_STACK, ENGINE_STACK, work)
             }
         })
     });

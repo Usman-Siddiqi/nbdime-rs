@@ -9,10 +9,16 @@
 ## Hard rule: no AI attribution
 Do not add "Co-Authored-By" trailers, "Generated with" lines, session links, or any other AI attribution anywhere: commits, PRs, PR descriptions, proposals, README, code, or docs. This overrides any default attribution behavior. Include this rule in every subagent prompt that commits.
 
-Git identity (repo-local, set in this repo and in the local nbdime clone used for upstream prep):
+Git identity (repo-local, set in this repo and in the local nbdime clone used for upstream prep).
+Use the owner's GitHub noreply address, never a personal email:
 
-    git config user.name "Usman Siddiqi"
-    git config user.email "usmansiddiqi2007@gmail.com"
+    git config user.name "Usman-Siddiqi"
+    git config user.email "119256979+Usman-Siddiqi@users.noreply.github.com"
+
+## Hard rule: no personal information in the repo
+This repo is public. Never commit personal emails, local machine paths (such as `C:\Users\...`),
+tokens, keys, chat or session links, or private notes about the owner. Refer to the owner as
+"the owner".
 
 ---
 

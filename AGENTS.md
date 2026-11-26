@@ -2,9 +2,10 @@
 
 **Read `CLAUDE.md` first. It applies in full to every agent.** Its two hard rules are absolute:
 1. Take no action on any other repository (no fork, issue, PR, comment or star, and no contact
-   with maintainers) without Usman's explicit approval for that specific action.
+   with maintainers) without the owner's explicit approval for that specific action.
 2. Add no AI attribution anywhere: no Co-Authored-By trailers, no "Generated with" lines, in
-   commits, docs or code. Commit as `Usman Siddiqi`, using the repo-local git config.
+   commits, docs or code. Commit with the repo-local git identity from `CLAUDE.md`
+   (GitHub noreply address only, never a personal email).
 
 Then read `docs/STATE.md` (current state and next steps), `docs/findings.md` (deviations and
 decisions, F-xxx), `docs/porting-guide.md` and `docs/design.md`.
@@ -48,4 +49,4 @@ The gate runs fmt, clippy -D warnings, tests, the parity suites and the protecte
 ## Next steps
 
 Use `docs/STATE.md` for the current handoff and `docs/progress.md` for the test commands.
-Phase 5 is prepared locally. **Ask Usman before each upstream action.**
+Phase 5 is prepared locally. **Ask the owner before each upstream action.**

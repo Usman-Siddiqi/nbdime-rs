@@ -4,3 +4,8 @@
 /parity/.cache/
 /bench/.work/
 .pytest_cache/
+
+# Agent instructions live outside the repo
+CLAUDE.md
+AGENTS.md
+agent.md

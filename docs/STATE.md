@@ -22,7 +22,7 @@ in `docs/findings.md`.
 2. Phase 5 is prepared locally at upstream commit `9495782`, based on nbdime v4.0.4. Use
    `docs/upstream/optional-rust-engine.patch` to reproduce it in a separate local checkout.
    The upstream non-web suite had 6,365 passes, 7 skips and 4 expected failures in each mode.
-   Keep the prototype local and ask Usman before each upstream action. The proposal and PR
+   Keep the prototype local and ask the owner before each upstream action. The proposal and PR
    description drafts are in `docs/upstream/`.
 
 ## Workflow

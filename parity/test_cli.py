@@ -588,10 +588,17 @@ def test_cli_nbmerge_upstream_files(sandbox):
     check_cli(cases, root, env, min_cases=60)
 
 
+SITE_PACKAGES_MASK = (
+    rb"(?m)^(\[W warnings:110\] )/[^\n]*/site-packages/(?=nbformat/validator\.py:434: )", rb"\1")
+
+
 def test_cli_nbmerge_generated(sandbox):
     root, env = sandbox
     rng = rng_for("cli-nbmerge-gen")
     cases = [_merge_case(rng, *t) for t in generated_triples(root, "nbmerge", scaled(250))]
+    for c in cases:
+        # The warning names nbformat's install location, which differs between environments.
+        c["mask"] = list(c.get("mask", ())) + [SITE_PACKAGES_MASK]
     check_cli(cases, root, env, min_cases=scaled(250))
 
 
@@ -628,7 +635,8 @@ def test_cli_delta_regressions(sandbox):
     if base.exists():
         shutil.rmtree(base)
     rng = rng_for("cli-delta")
-    nb = random_notebook(rng, n_cells=2)
+    # With ids: the appended cell has one, so the notebook must be 4.5 for every seed.
+    nb = random_notebook(rng, n_cells=2, ids=True)
     texts = []
     for src in ("x = 1\n", "x = '\U0010F780\U0010F7FF'\ny = '\\udcff'\n"):
         n = copy.deepcopy(nb)

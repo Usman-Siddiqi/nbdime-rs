@@ -19,10 +19,13 @@ in `docs/findings.md`.
    a final result. Rerun every enabled suite for each seed and triage any failures before marking
    Phase 3 complete. The planned random notebook suites cover at least 130,560 pairs and triples
    over those seeds. See `docs/progress.md` for the environment and commands.
-2. Phase 5 is prepared locally at upstream commit `9495782`, based on nbdime v4.0.4. Use
+2. Phase 5 is prepared locally at upstream commit `bbf08bc`, based on nbdime v4.0.4. Use
    `docs/upstream/optional-rust-engine.patch` to reproduce it in a separate local checkout.
-   The upstream non-web suite had 6,365 passes, 7 skips and 4 expected failures in each mode.
-   Keep the prototype local and ask the owner before each upstream action. The proposal and PR
+   The patch now logs engine errors at debug level, adds `NBDIME_ACCEL=force`, loads the engine
+   under a lock and tests the real extension against pure Python. The upstream non-web suite
+   had 6,383 passes, 7 skips and 4 expected failures in each of `NBDIME_ACCEL=0`, the default
+   and `force`. The only other failure in each mode is the JS-artifacts test. Keep the
+   prototype local and ask the owner before each upstream action. The proposal and PR
    description drafts are in `docs/upstream/`.
 
 ## Workflow

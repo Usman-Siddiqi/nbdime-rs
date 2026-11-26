@@ -1,24 +1,32 @@
 From 94957829295a384ce1665307841b5cc1da531875 Mon Sep 17 00:00:00 2001
-From: Usman Siddiqi <119256979+Usman-Siddiqi@users.noreply.github.com>
-Date: Wed, 25 Nov 2026 13:37:10 -0500
+From: Usman-Siddiqi <119256979+Usman-Siddiqi@users.noreply.github.com>
+Date: Thu, 26 Nov 2026 23:42:49 +0000
 Subject: [PATCH] Add optional Rust notebook diff and merge acceleration
 
+Use the nbdime_rs extension for notebook diffs and merge decisions when
+a compatible build is installed, and keep the Python implementation for
+configurations and inputs the extension cannot represent.
+
+NBDIME_ACCEL=0 never imports the extension. NBDIME_ACCEL=force raises
+instead of falling back when the extension is missing, incompatible or
+reports an error. By default an engine error is logged at debug level
+and the Python implementation is used.
 ---
- nbdime/_accel.py            | 254 ++++++++++++++++++++++++++++++++++++
- nbdime/diffing/notebooks.py |  16 +++
- nbdime/merging/notebooks.py |   9 +-
- nbdime/tests/test_accel.py  | 200 ++++++++++++++++++++++++++++
+ nbdime/_accel.py            | 294 +++++++++++++++++++++++++++++++
+ nbdime/diffing/notebooks.py |  16 ++
+ nbdime/merging/notebooks.py |  11 +-
+ nbdime/tests/test_accel.py  | 336 ++++++++++++++++++++++++++++++++++++
  pyproject.toml              |   1 +
- 5 files changed, 479 insertions(+), 1 deletion(-)
+ 5 files changed, 657 insertions(+), 1 deletion(-)
  create mode 100644 nbdime/_accel.py
  create mode 100644 nbdime/tests/test_accel.py
 
 diff --git a/nbdime/_accel.py b/nbdime/_accel.py
 new file mode 100644
-index 0000000..e36a53b
+index 0000000..4c6da12
 --- /dev/null
 +++ b/nbdime/_accel.py
-@@ -0,0 +1,254 @@
+@@ -0,0 +1,294 @@
 +# Copyright (c) Jupyter Development Team.
 +# Distributed under the terms of the Modified BSD License.
 +
@@ -28,34 +36,58 @@ index 0000000..e36a53b
 +from importlib import import_module
 +from math import isnan
 +import os
++import threading
 +from types import SimpleNamespace
 +
 +from nbformat import NotebookNode, from_dict
 +
 +from ._version import __version__
 +from .diff_format import DiffEntry
++from .log import logger
 +
 +_UNLOADED = object()
 +_engine = _UNLOADED
++_load_lock = threading.Lock()
++
++
++def _load():
++    """Import the engine once, even when several threads ask for it at the same time."""
++    global _engine
++    with _load_lock:
++        if _engine is _UNLOADED:
++            try:
++                _engine = import_module("nbdime_rs")
++            except ImportError as e:
++                logger.debug("nbdime_rs could not be imported: %s", e)
++                _engine = None
 +
 +
 +def enabled():
-+    global _engine
-+    if os.environ.get("NBDIME_ACCEL", "1") == "0":
++    """Whether the engine can be used.
++
++    ``NBDIME_ACCEL`` selects the mode: ``0`` never uses the engine and never imports it, ``force``
++    raises instead of falling back to Python when the engine is missing, incompatible or fails,
++    and any other value (the default) uses the engine when a compatible one imports.
++    """
++    mode = os.environ.get("NBDIME_ACCEL", "1")
++    if mode == "0":
 +        return False
 +    if _engine is _UNLOADED:
-+        try:
-+            _engine = import_module("nbdime_rs")
-+        except ImportError:
-+            _engine = None
++        _load()
 +    error = getattr(_engine, "EngineError", None)
-+    return (
++    usable = (
 +        getattr(_engine, "NBDIME_COMPAT", None) == __version__
 +        and isinstance(error, type)
 +        and issubclass(error, Exception)
 +        and callable(getattr(_engine, "diff_notebooks", None))
 +        and callable(getattr(_engine, "decide_notebook_merge", None))
 +    )
++    if not usable and mode == "force":
++        raise RuntimeError(
++            "NBDIME_ACCEL=force is set, but no compatible nbdime_rs extension "
++            "for nbdime %s is available" % __version__
++        )
++    return usable
 +
 +
 +class NotebookOptions:
@@ -93,7 +125,10 @@ index 0000000..e36a53b
 +        differ_defaults = self._differs.default_values
 +        if (
 +            differ_defaults.keys() != self._differ_defaults.keys()
-+            or any(differ is not self._differ_defaults[path] for path, differ in differ_defaults.items())
++            or any(
++                differ is not self._differ_defaults[path]
++                for path, differ in differ_defaults.items()
++            )
 +        ):
 +            return False
 +        predicate_defaults = self._predicates.default_values
@@ -147,7 +182,10 @@ index 0000000..e36a53b
 +                continue
 +            keys = []
 +            for group in groups:
-+                if type(group) not in (list, tuple, set) or any(type(key) is not str for key in group):
++                if (
++                    type(group) not in (list, tuple, set)
++                    or any(type(key) is not str for key in group)
++                ):
 +                    return None
 +                keys.extend(group)
 +            rules[path] = keys
@@ -207,7 +245,10 @@ index 0000000..e36a53b
 +def _call(name, *args, **kwargs):
 +    try:
 +        return getattr(_engine, name)(*args, **kwargs)
-+    except (_engine.EngineError, TypeError, ValueError, RuntimeError):
++    except _engine.EngineError as e:
++        if os.environ.get("NBDIME_ACCEL") == "force":
++            raise
++        logger.debug("nbdime_rs %s failed, using the Python implementation: %s", name, e)
 +        return None
 +
 +
@@ -246,12 +287,17 @@ index 0000000..e36a53b
 +        return None
 +    merge_args = None
 +    if args:
-+        if type(args) not in (Namespace, SimpleNamespace) or getattr(args, "log_level", "DEBUG") == "DEBUG":
++        if (
++            type(args) not in (Namespace, SimpleNamespace)
++            or getattr(args, "log_level", "DEBUG") == "DEBUG"
++        ):
 +            return None
 +        try:
 +            merge_args = {
 +                name: getattr(args, name)
-+                for name in ("merge_strategy", "input_strategy", "output_strategy", "ignore_transients")
++                for name in (
++                    "merge_strategy", "input_strategy", "output_strategy", "ignore_transients"
++                )
 +            }
 +        except AttributeError:
 +            return None
@@ -265,10 +311,12 @@ index 0000000..e36a53b
 +    for data in result:
 +        decision = MergeDecision(data)
 +        decision.common_path = tuple(decision.common_path)
-+        decision.local_diff = _diff_entries(decision.local_diff, isinstance(local, NotebookNode))
-+        decision.remote_diff = _diff_entries(decision.remote_diff, isinstance(remote, NotebookNode))
++        local_nodes = isinstance(local, NotebookNode)
++        remote_nodes = isinstance(remote, NotebookNode)
++        decision.local_diff = _diff_entries(decision.local_diff, local_nodes)
++        decision.remote_diff = _diff_entries(decision.remote_diff, remote_nodes)
 +        if "similar_insert" in decision:
-+            decision.similar_insert = _diff_entries(decision.similar_insert, isinstance(remote, NotebookNode))
++            decision.similar_insert = _diff_entries(decision.similar_insert, remote_nodes)
 +        if "custom_diff" in decision:
 +            decision.custom_diff = _diff_entries(decision.custom_diff, False)
 +        decisions.append(decision)
@@ -334,7 +382,7 @@ index 30a86fd..ccc7015 100644
          raise TypeError("Expected inputs to be dicts, got %r and %r" % (a, b))
      return diff(a, b, path="", config=notebook_config)
 diff --git a/nbdime/merging/notebooks.py b/nbdime/merging/notebooks.py
-index e81072d..1d7a89a 100644
+index e81072d..82d87f2 100644
 --- a/nbdime/merging/notebooks.py
 +++ b/nbdime/merging/notebooks.py
 @@ -9,7 +9,9 @@ from io import StringIO
@@ -348,12 +396,14 @@ index e81072d..1d7a89a 100644
  from ..utils import Strategies
  from ..prettyprint import (
      pretty_print_notebook_diff,
-@@ -130,6 +132,11 @@ def notebook_merge_strategies(args):
+@@ -130,6 +132,13 @@ def notebook_merge_strategies(args):
  
  
  def decide_notebook_merge(base, local, remote, args=None):
 +    result = _accel.merge_decisions(
-+        base, local, remote, args, notebook_diffing.notebook_config, notebook_diffing._accel_options)
++        base, local, remote, args,
++        notebook_diffing.notebook_config, notebook_diffing._accel_options,
++    )
 +    if result is not None:
 +        return result
 +
@@ -362,13 +412,18 @@ index e81072d..1d7a89a 100644
  
 diff --git a/nbdime/tests/test_accel.py b/nbdime/tests/test_accel.py
 new file mode 100644
-index 0000000..52b379e
+index 0000000..9cd631d
 --- /dev/null
 +++ b/nbdime/tests/test_accel.py
-@@ -0,0 +1,200 @@
+@@ -0,0 +1,336 @@
 +# Copyright (c) Jupyter Development Team.
 +# Distributed under the terms of the Modified BSD License.
 +
++import logging
++import threading
++import time
++from importlib import import_module
++from pathlib import Path
 +from types import SimpleNamespace
 +
 +import nbformat
@@ -430,7 +485,7 @@ index 0000000..52b379e
 +
 +
 +@pytest.mark.parametrize("reason", ["disabled", "missing", "incompatible", "conversion"])
-+def test_pure_python_fallback(engine, monkeypatch, reason):
++def test_pure_python_fallback(engine, monkeypatch, caplog, reason):
 +    if reason == "disabled":
 +        monkeypatch.setenv("NBDIME_ACCEL", "0")
 +    elif reason == "missing":
@@ -444,9 +499,68 @@ index 0000000..52b379e
 +        engine.decide_notebook_merge = fail
 +
 +    nb = nbformat.v4.new_notebook()
-+    assert diff_notebooks(nb, nb) == []
-+    assert merge_notebooks(nb, nb, nb) == (nb, [])
++    with caplog.at_level(logging.DEBUG, logger="nbdime"):
++        assert diff_notebooks(nb, nb) == []
++        assert merge_notebooks(nb, nb, nb) == (nb, [])
 +    assert not engine.calls
++    assert ("fallback" in caplog.text) == (reason == "conversion")
++
++
++@pytest.mark.parametrize("reason", ["missing", "incompatible", "conversion"])
++def test_force_raises_instead_of_falling_back(engine, monkeypatch, reason):
++    monkeypatch.setenv("NBDIME_ACCEL", "force")
++    if reason == "missing":
++        monkeypatch.setattr(_accel, "_engine", None)
++    elif reason == "incompatible":
++        engine.NBDIME_COMPAT = "incompatible"
++    else:
++        def fail(*args, **kwargs):
++            raise EngineError("fallback")
++        engine.diff_notebooks = fail
++        engine.decide_notebook_merge = fail
++
++    nb = nbformat.v4.new_notebook()
++    with pytest.raises(EngineError if reason == "conversion" else RuntimeError):
++        diff_notebooks(nb, nb)
++    with pytest.raises(EngineError if reason == "conversion" else RuntimeError):
++        merge_notebooks(nb, nb, nb)
++
++
++def test_other_engine_errors_are_not_swallowed(engine):
++    def fail(*args, **kwargs):
++        raise TypeError("bug")
++
++    engine.diff_notebooks = fail
++    nb = nbformat.v4.new_notebook()
++    with pytest.raises(TypeError):
++        diff_notebooks(nb, nb)
++
++
++def test_force_uses_python_for_unsupported_configuration(engine, monkeypatch):
++    monkeypatch.setenv("NBDIME_ACCEL", "force")
++    monkeypatch.setitem(notebooks.notebook_predicates, "/cells", [lambda a, b: False])
++    nb = {"cells": []}
++    assert diff_notebooks(nb, nb) == []
++    assert not engine.calls
++
++
++def test_engine_is_loaded_once_across_threads(monkeypatch):
++    imports = []
++
++    def slow_import(name):
++        imports.append(name)
++        time.sleep(0.05)
++        return None
++
++    monkeypatch.setattr(_accel, "_engine", _accel._UNLOADED)
++    monkeypatch.setattr(_accel, "import_module", slow_import)
++    monkeypatch.setenv("NBDIME_ACCEL", "1")
++    threads = [threading.Thread(target=_accel.enabled) for _ in range(8)]
++    for thread in threads:
++        thread.start()
++    for thread in threads:
++        thread.join()
++    assert imports == ["nbdime_rs"]
 +
 +
 +def test_supported_ignores_are_tracked(engine):
@@ -543,7 +657,11 @@ index 0000000..52b379e
 +            "local_diff": [],
 +            "remote_diff": [],
 +            "similar_insert": [
-+                {"op": "patch", "key": 0, "diff": [{"op": "replace", "key": "source", "value": "new"}]},
++                {
++                    "op": "patch",
++                    "key": 0,
++                    "diff": [{"op": "replace", "key": "source", "value": "new"}],
++                },
 +            ],
 +        }]
 +
@@ -557,8 +675,14 @@ index 0000000..52b379e
 +
 +
 +def test_display_output_order_follows_python_behavior(engine):
-+    left = nbformat.NotebookNode(output_type="display_data", data=nbformat.NotebookNode(), metadata=nbformat.NotebookNode())
-+    right = nbformat.NotebookNode(output_type="display_data", data=nbformat.NotebookNode(), metadata=nbformat.NotebookNode())
++    def display_output():
++        return nbformat.NotebookNode(
++            output_type="display_data",
++            data=nbformat.NotebookNode(),
++            metadata=nbformat.NotebookNode(),
++        )
++
++    left, right = display_output(), display_output()
 +    left.data["text/plain"] = "first"
 +    right.data["text/plain"] = "second"
 +    a = nbformat.v4.new_notebook(cells=[nbformat.v4.new_code_cell(id="id", outputs=[left])])
@@ -566,6 +690,68 @@ index 0000000..52b379e
 +    diff_notebooks(a, b)
 +    assert list(left)[-1] == list(right)[-1] == "data"
 +    assert not engine.calls
++
++
++FILES = Path(__file__).parent / "files"
++DIFF_PAIRS = [
++    ("multilevel-test-base", "multilevel-test-local"),
++    ("multilevel-test-base", "multilevel-test-remote"),
++    ("cellids--base", "cellids--local"),
++    ("single_cell_nb", "single_cell_nb--changed_source_output"),
++    ("multi_cell_nb", "multi_cell_nb--cellchange"),
++    ("attachment", "attachment--change_attachment"),
++]
++MERGE_TRIPLES = [
++    ("multilevel-test-base", "multilevel-test-local", "multilevel-test-remote"),
++    ("inline-conflict--1", "inline-conflict--2", "inline-conflict--3"),
++    ("multi_cell_nb", "multi_cell_nb--local", "multi_cell_nb--remote"),
++    ("source-conflict--1", "source-conflict--2", "source-conflict--3"),
++    ("single_cell_nb", "single_cell_nb--changed_source", "single_cell_nb--changed_output"),
++    ("mixed-conflicts--1", "mixed-conflicts--2", "mixed-conflicts--3"),
++]
++
++
++def _extension():
++    try:
++        engine = import_module("nbdime_rs")
++    except ImportError:
++        return None
++    return engine if getattr(engine, "NBDIME_COMPAT", None) == _accel.__version__ else None
++
++
++def _read(name):
++    return nbformat.read(str(FILES / (name + ".ipynb")), as_version=4)
++
++
++@pytest.fixture
++def real_engine(monkeypatch):
++    monkeypatch.setattr(_accel, "_engine", _accel._UNLOADED)
++    notebooks.reset_notebook_differ()
++    yield
++    notebooks.reset_notebook_differ()
++
++
++def _python_only(monkeypatch, func, *args):
++    with monkeypatch.context() as m:
++        m.setenv("NBDIME_ACCEL", "0")
++        return func(*args)
++
++
++@pytest.mark.skipif(_extension() is None, reason="a compatible nbdime_rs is not installed")
++class TestRealExtension:
++    @pytest.mark.parametrize("names", DIFF_PAIRS)
++    def test_diff_matches_python(self, real_engine, monkeypatch, names):
++        a, b = (_read(name) for name in names)
++        expected = _python_only(monkeypatch, diff_notebooks, a, b)
++        monkeypatch.setenv("NBDIME_ACCEL", "force")
++        assert diff_notebooks(a, b) == expected
++
++    @pytest.mark.parametrize("names", MERGE_TRIPLES)
++    def test_merge_matches_python(self, real_engine, monkeypatch, names):
++        base, local, remote = (_read(name) for name in names)
++        expected = _python_only(monkeypatch, merge_notebooks, base, local, remote)
++        monkeypatch.setenv("NBDIME_ACCEL", "force")
++        assert merge_notebooks(base, local, remote) == expected
 diff --git a/pyproject.toml b/pyproject.toml
 index f8ed0cd..ae5a334 100644
 --- a/pyproject.toml

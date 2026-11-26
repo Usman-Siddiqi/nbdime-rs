@@ -151,3 +151,60 @@ Upstream (`nbdiff` 4.0.4) on the same micro cases: 1.47 s (image add), 1.91 s (i
   earliest `firstpos` in `b`) in linear time and also gives the per-row maxima the bound needs.
 - No-ids bench profile: `is_similar` (strict cell predicate over all pairs) ~30%, the
   `Predicate::apply` dispatch per pair ~13%.
+
+
+## Windows handoff (2026-11-25 to 2026-11-26)
+
+- Installed Ubuntu 24.04 under WSL2 and Rust stable 1.100.0. Builds and tests ran on the Linux
+  filesystem at `/root/nbdime-rs-gate`. The Windows checkout remains the working repository.
+  The oracle was CPython 3.13.18, nbdime 4.0.4, nbformat 5.11.1, Pygments 2.21.0 and Git 2.43.0.
+  The upstream tag checkout is at `/root/ref/nbdime-upstream`.
+- The original `baddf59` baseline passed 105 of 106 parity tests. The Git merge suite compared
+  independently generated Git temp names and exposed a missing duplicate-ID diagnostic. The
+  corrected comparison still checks the warning body, stderr, exit status and notebook output.
+  See F-048.
+- Finished the U08, U14 and P4 reviews. U08 matched 4,124 Python and 4,552 Markdown cells
+  against Pygments. U14 matched 19 configuration scenarios and 18 driver help cases, and added
+  regressions for three clean-filter mismatches. P4 matched 77,322 targeted runtime cases and
+  restored `quick_ratio_sorted` for existing Rust callers.
+- Fixed U15's circular references, container subclass iteration, dict mutation errors, option
+  handling and small-stack calls. The focused gate passed 25 tests. The full gate on `d83205a`
+  passed 129 tests in 610.71 seconds with no skips, including the U15 suite. Its merge is
+  `b49537d` and the suite was enabled in `5509c7e`.
+- Maturin 1.16 and Zig built the 658,992-byte `cp39-abi3` x86-64 manylinux2014 wheel with the
+  full license. Its SHA-256 is
+  `62ac44a81ca836627870c80a83785e5e0ac9016f517df15a69173d186e888c46`.
+  Clean CPython 3.9.25 and 3.13.18 installs passed the import and diff/patch checks. Measured
+  one import of 1.9 ms and 4.2 ms respectively. The median 25-level patch call took 57 and 65 µs.
+  The local wheel is under `/root/ref/wheels`.
+- Phase 3 runs at scale 4 with seeds 3, 17 and 29 started against the complete suite, then were
+  interrupted before final summaries. Partial logs are at `/root/ref/phase3-seed-{3,17,29}.log`.
+  No Phase 3 result is recorded as passing.
+- Prepared the optional upstream adapter in a separate local clone at `/root/ref/nbdime-accel`.
+  Commit `9495782` is available as `docs/upstream/optional-rust-engine.patch`. The upstream
+  non-web suite passed 6,365 tests with 7 skips and 4 expected failures in each of two runs with
+  `NBDIME_ACCEL=0` and `1`. Verified native diff and merge dispatch as well as actual list-source
+  fallback. On one 800-cell source-edit case the median was 227.3 ms in Python and 12.9 ms using
+  the adapter. No upstream action was taken. See F-050.
+
+### Resume Phase 3
+
+Start from the pushed `main` in a Linux checkout. In the WSL build checkout, fetch the local
+Windows repository and switch from the previously tested detached commit to the updated `main`.
+The environment below uses the prepared oracle. On another machine, follow `AGENTS.md` and set
+these paths to its own reference installation.
+
+```bash
+export REF_PYTHON=/root/ref/venv/bin/python
+export NBDIME_REF_PYTHON="$REF_PYTHON"
+export NBDIME_REF_BIN=/root/ref/venv/bin
+export NBDIME_UPSTREAM=/root/ref/nbdime-upstream
+export GIT_AUTHOR_NAME=Parity GIT_AUTHOR_EMAIL=parity@example.test
+export GIT_COMMITTER_NAME=Parity GIT_COMMITTER_EMAIL=parity@example.test
+export LC_ALL=C.UTF-8 TZ=UTC
+set -eo pipefail
+for seed in 3 17 29; do
+  PARITY_SCALE=4 PARITY_SEED="$seed" PARITY_CLI_WORKERS=8 \
+    bash scripts/gate.sh 2>&1 | tee "phase3-seed-$seed.log"
+done
+```

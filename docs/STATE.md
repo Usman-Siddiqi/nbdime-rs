@@ -1,38 +1,33 @@
-# Current state (compact; read this first on restart)
+# Current state
 
-Updated 2026-11-25 17:00 UTC. Details live in `docs/progress.md`, decisions in `docs/findings.md`.
+Updated 2026-11-26. The session history is in `docs/progress.md` and compatibility decisions are
+in `docs/findings.md`.
 
-## Merged to main
-- U01–U05, U02 (JSON I/O, generic diff, patch, nbformat), U04 notebook diff, U10 merge engine,
-  U06 terminal pretty-printer, U07 CLI (`nbdiff`, `nbmerge`, `nbdime`; 97 parity tests incl.
-  `test_cli.py`; ~2 ms per nbdiff run vs ~1 s upstream). U16 (in-process git diff) withdrawn: rendering spawns git like
-  upstream (F-022, F-023).
-- Enabled parity suites: `parity/enabled_suites.txt`.
+## Merged and verified
 
-## Merged 2026-11-25 (weekly usage at 97%, so reviews were deferred)
-- U08 nbshow, P4 performance, U14 git drivers/config-git/nbpatch: gate passed on main
-  (106 parity tests incl. test_cli_git and test_upstream_suite). Their hostile reviews hit the
-  rate limit mid-run and are owed after the usage reset; review agents' work is saved.
+- U08, U14 and P4 reviews are closed. The fixes cover `nbshow` help, Python regex cases, Git clean
+  filters, duplicate-ID diagnostics during merge and the public sorted quick-ratio helper.
+- U15 is merged. The full Linux gate on `d83205a` passed all 129 parity tests with no skips.
+  That run included `test_u15_python.py`, which is now in `parity/enabled_suites.txt`. The
+  extension's Clippy, Rust tests, Python boundary tests and nested parity suites passed.
+- The x86-64 manylinux2014 `cp39-abi3` wheel was installed and tested in fresh CPython 3.9.25 and
+  3.13.18 environments. It includes the BSD license.
 
-## Next (after the usage reset)
-1. Finish the U08, U14 and P4 hostile reviews; findings become parity cases, then fix.
-2. U15 (`unit/u15`): review done, SIGN-OFF no. Fix: circular refs must raise ValueError at once
-   (track container ptrs on the stack), dict mutated mid-conversion gives PanicException (catch
-   it, raise RuntimeError), dict/list subclasses must convert via items()/iteration like json,
-   wheel LICENSE + manylinux2014, run nbdime-py clippy and unit tests in the suite; smaller
-   items 7-13 and F-040/F-041/F-043 corrections. Add the regression tests to test_u15_python.py
-   first. Then gate, merge, enable.
-3. Phase 3 large differential runs; Phase 5 local upstream integration; then stop and ask.
+## Next
 
-## Workflow (owner instructions 2026-11-20 and 2026-11-25)
-- Fan out every unblocked unit at once, each in its own worktree; the orchestrator writes the
-  parity suites first so units can be gated independently. Owner gave standing authority to
-  change the workflow for quality or speed.
-- One hostile review per unit (Opus), aimed at the riskiest areas: git edge cases, encodings,
-  Python lookalikes. No delta re-reviews.
-- Every review finding becomes parity cases; the gate verifies fixes.
-- Sonnet/Haiku for mechanical work; the strongest model only for design and tricky logic.
-- Port remaining units against upstream's own test suite first; review deeply only failures or
-  unusual code.
-- CLAUDE.md still says "two hostile reviews"; the owner's newer instruction above takes
-  precedence until CLAUDE.md is updated.
+1. Resume Phase 3. The scale-4 runs for seeds 3, 17 and 29 were interrupted before pytest printed
+   a final result. Rerun every enabled suite for each seed and triage any failures before marking
+   Phase 3 complete. The planned random notebook suites cover at least 130,560 pairs and triples
+   over those seeds. See `docs/progress.md` for the environment and commands.
+2. Phase 5 is prepared locally at upstream commit `9495782`, based on nbdime v4.0.4. Use
+   `docs/upstream/optional-rust-engine.patch` to reproduce it in a separate local checkout.
+   The upstream non-web suite had 6,365 passes, 7 skips and 4 expected failures in each mode.
+   Keep the prototype local and ask Usman before each upstream action. The proposal and PR
+   description drafts are in `docs/upstream/`.
+
+## Workflow
+
+- One hostile review per unit. Record the findings, add regression coverage and verify fixes with
+  the gate. Keep harness changes in separate commits.
+- U16 remains withdrawn for licensing reasons. Text rendering delegates to Git or the existing
+  fallbacks. The web UI is outside the port's scope.

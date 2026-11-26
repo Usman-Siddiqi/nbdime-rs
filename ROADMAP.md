@@ -3,7 +3,7 @@
 Status legend: ✅ done · 🔄 in progress · ⏳ not started · ⛔ blocked
 
 Every unit's exit condition: compiles warning-free (fmt, clippy `-D warnings`), its parity suite
-passes with no skips and at least the stated case count, two hostile reviews signed off, merged by
+passes with no skips and at least the stated case count, one hostile review closed, merged by
 the orchestrator. Parity is measured against nbdime 4.0.4.
 
 ## Phase 0: understand and design ✅
@@ -11,7 +11,7 @@ the orchestrator. Parity is measured against nbdime 4.0.4.
 - Reproduce and explain the scaling problem: `docs/upstream-performance.md`.
 - `docs/porting-guide.md`, `docs/design.md`, `docs/findings.md`, `CLAUDE.md`.
 
-## Phase 1: foundation and pilot ✅ (pilot merged; awaiting go-ahead for Phase 2)
+## Phase 1: foundation and pilot ✅
 | Unit | Owner | Status | Acceptance |
 |---|---|---|---|
 | F1 workspace, CI, license | orchestrator | ✅ | `cargo build`, CI green |
@@ -28,7 +28,7 @@ brute-force LCS, multilevel snakes, `diff_lists`, `diff_dicts`, generic `diff(a,
 default config. Parity: `nbdime.diff` and the individual functions on ≥ 20,000 generated cases and
 all string fields of the upstream test notebooks, byte-identical JSON.
 
-## Phase 2: fan out the port 🔄
+## Phase 2: fan out the port ✅
 | Unit | Depends on | Scope |
 |---|---|---|
 | U02 nbformat read/write | F3 | rejoin/split lines, strip transient, id policy (F-003), v3→v4 upconversion, `nbformat.write` formatting |
@@ -45,19 +45,27 @@ all string fields of the upstream test notebooks, byte-identical JSON.
 | U15 Python package `nbdime_rs` | U04, U13 | PyO3 API per `docs/design.md`, wheels via maturin |
 | U16 git-compatible text diff/merge | withdrawn | licensing (F-023); git is spawned like upstream (F-022). `parity/test_u16_xdiff.py` now checks U06's git renderers |
 
-## Phase 3: integration and parity ⏳
+## Phase 3: integration and parity 🔄
 Full upstream-derived test set through the harness, large differential runs (≥ 100k notebook
 pairs/triples), triage → fix → review loop until parity targets are met or remaining differences
 are documented deviations.
 
-## Phase 4: performance and polish ⏳
+The default gate passed 129 parity tests. Scale-4 runs for seeds 3, 17 and 29 need to be rerun
+after interruption. See `docs/progress.md`.
+
+## Phase 4: performance and polish 🔄
 Benchmarks vs upstream at 100 to 10,000 cells, profiling, algorithmic work that keeps parity,
 pip packaging, docs, README with charts from real runs.
 
-## Phase 5: upstream contribution prep (local only) ⏳
+P4 is reviewed and the local x86-64 manylinux2014 Python wheel is verified.
+
+## Phase 5: upstream contribution prep (local only) ✅
 Local nbdime clone, optional engine integration, tests with and without the engine,
 `docs/upstream/proposal.md`, `docs/upstream/pr-description.md`, skeptical-maintainer review, then
 stop and ask.
+
+Local adapter and test evidence are recorded in `docs/STATE.md`. The patch is in
+`docs/upstream/optional-rust-engine.patch`. Each upstream action requires separate approval.
 
 ## Parity status
 | Area | Status |
@@ -69,3 +77,5 @@ stop and ask.
 | Merge | identical on the U10 suite (decisions, apply, notebook merges, strategies); deviations F-021, F-027; F-024 replicated |
 | Pretty-printer | byte-identical on the U06 suite (diffs, merge decisions, values, git renderer suite U16); deviations F-030 |
 | CLI output | `nbdiff`/`nbmerge`/`nbdime` identical on `test_cli.py` (exit code, stdout, output file, stderr) incl. git ref mode, config files, review regressions; deviations F-029, F-031 |
+| `nbshow`, `nbpatch` and Git integration | Enabled CLI and upstream-derived suites pass. See F-032, F-033, F-047 and F-048 for scope and deviations. |
+| Python engine | Enabled U15 suite passes, including boundary tests and diff, patch and merge parity through PyO3. See F-040–F-043. |

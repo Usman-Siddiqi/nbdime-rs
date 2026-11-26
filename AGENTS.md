@@ -19,8 +19,7 @@ prepared locally only (Phase 5). The web UI is out of scope.
 - `crates/nbdime-core`: JSON with Python semantics, diff, patch, merge, prettyprint (including
   a Pygments-compatible lexer and a Python-`re` engine).
 - `crates/nbdime-cli`: the binaries and a faithful argparse port.
-- `crates/nbdime-py`: PyO3 bindings. This crate is not a default workspace member and lives on
-  branch `unit/u15`.
+- `crates/nbdime-py`: PyO3 bindings. This crate is an optional workspace member.
 - `parity/`: the harness. The oracle is upstream nbdime 4.0.4 in a venv. This path is
   **protected**: never weaken, skip or special-case a test.
 - `bench/` holds the benchmarks. `scripts/gate.sh` is the merge gate (protected).
@@ -46,14 +45,7 @@ The gate runs fmt, clippy -D warnings, tests, the parity suites and the protecte
   Rendering spawns git or diff the same way upstream does.
 - Keep `docs/STATE.md` current.
 
-## Next steps (2026-11-25)
-1. **U08, U14 and P4 were merged without their hostile reviews**, because usage ran out. Do
-   those reviews now. Focus on lexer and `re` parity (U08), git edge cases, paths and encodings
-   (U14), and whether the P4 optimisations changed any results.
-2. **U15** (`unit/u15`): fix the items in `docs/process/u15-review.md`, the circular-reference
-   crash first. Add the regression tests to `parity/test_u15_python.py`. Then merge `main` in,
-   gate with `parity/test_u15_python.py` added, merge, and add that suite to
-   `enabled_suites.txt`.
-3. Phase 3: large differential runs (`PARITY_SCALE=4`, several seeds, all suites).
-4. Phase 5: in a local upstream clone, add `nbdime/_accel.py` as described in `docs/design.md`,
-   in nbdime's own style. Then **stop and ask Usman** before any upstream action.
+## Next steps
+
+Use `docs/STATE.md` for the current handoff and `docs/progress.md` for the test commands.
+Phase 5 is prepared locally. **Ask Usman before each upstream action.**

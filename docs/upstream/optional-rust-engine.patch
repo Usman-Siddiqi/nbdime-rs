@@ -1,0 +1,583 @@
+From 94957829295a384ce1665307841b5cc1da531875 Mon Sep 17 00:00:00 2001
+From: Usman Siddiqi <usmansiddiqi2007@gmail.com>
+Date: Wed, 25 Nov 2026 13:37:10 -0500
+Subject: [PATCH] Add optional Rust notebook diff and merge acceleration
+
+---
+ nbdime/_accel.py            | 254 ++++++++++++++++++++++++++++++++++++
+ nbdime/diffing/notebooks.py |  16 +++
+ nbdime/merging/notebooks.py |   9 +-
+ nbdime/tests/test_accel.py  | 200 ++++++++++++++++++++++++++++
+ pyproject.toml              |   1 +
+ 5 files changed, 479 insertions(+), 1 deletion(-)
+ create mode 100644 nbdime/_accel.py
+ create mode 100644 nbdime/tests/test_accel.py
+
+diff --git a/nbdime/_accel.py b/nbdime/_accel.py
+new file mode 100644
+index 0000000..e36a53b
+--- /dev/null
++++ b/nbdime/_accel.py
+@@ -0,0 +1,254 @@
++# Copyright (c) Jupyter Development Team.
++# Distributed under the terms of the Modified BSD License.
++
++"""Optional notebook diff and merge acceleration."""
++
++from argparse import Namespace
++from importlib import import_module
++from math import isnan
++import os
++from types import SimpleNamespace
++
++from nbformat import NotebookNode, from_dict
++
++from ._version import __version__
++from .diff_format import DiffEntry
++
++_UNLOADED = object()
++_engine = _UNLOADED
++
++
++def enabled():
++    global _engine
++    if os.environ.get("NBDIME_ACCEL", "1") == "0":
++        return False
++    if _engine is _UNLOADED:
++        try:
++            _engine = import_module("nbdime_rs")
++        except ImportError:
++            _engine = None
++    error = getattr(_engine, "EngineError", None)
++    return (
++        getattr(_engine, "NBDIME_COMPAT", None) == __version__
++        and isinstance(error, type)
++        and issubclass(error, Exception)
++        and callable(getattr(_engine, "diff_notebooks", None))
++        and callable(getattr(_engine, "decide_notebook_merge", None))
++    )
++
++
++class NotebookOptions:
++    """Track which notebook differ changes can be described to the engine."""
++
++    def __init__(self, config, default_differ, default_predicate):
++        self._config = config
++        self._differs = config.differs
++        self._predicates = config.predicates
++        self._atomic_paths = dict(config._atomic_paths)
++        self._differ_factory = self._differs.default_factory
++        self._predicate_factory = self._predicates.default_factory
++        self._default_differ = default_differ
++        self._default_predicate = (default_predicate,)
++        self._differ_defaults = dict(self._differs.default_values)
++        self._predicate_defaults = {
++            path: tuple(predicates)
++            for path, predicates in self._predicates.default_values.items()
++        }
++        self.reset()
++
++    def reset(self):
++        self._overrides = {}
++
++    def matches(self, config):
++        if (
++            config is not self._config
++            or config.differs is not self._differs
++            or config.predicates is not self._predicates
++            or config._atomic_paths != self._atomic_paths
++            or self._differs.default_factory is not self._differ_factory
++            or self._predicates.default_factory is not self._predicate_factory
++        ):
++            return False
++        differ_defaults = self._differs.default_values
++        if (
++            differ_defaults.keys() != self._differ_defaults.keys()
++            or any(differ is not self._differ_defaults[path] for path, differ in differ_defaults.items())
++        ):
++            return False
++        predicate_defaults = self._predicates.default_values
++        if (
++            predicate_defaults.keys() != self._predicate_defaults.keys()
++            or any(
++                not self._same_predicates(predicates, self._predicate_defaults[path])
++                for path, predicates in predicate_defaults.items()
++            )
++        ):
++            return False
++        for path, predicates in self._predicates.items():
++            default = self._predicate_defaults.get(path, self._default_predicate)
++            if not self._same_predicates(predicates, default):
++                return False
++        for path, (differ, _) in self._overrides.items():
++            if self._differs.get(path) is not differ:
++                return False
++        for path, differ in self._differs.items():
++            if path not in self._overrides:
++                default = self._differ_defaults.get(path, self._default_differ)
++                if differ is not default:
++                    return False
++        return True
++
++    @staticmethod
++    def _same_predicates(predicates, expected):
++        return (
++            type(predicates) in (list, tuple)
++            and len(predicates) == len(expected)
++            and all(a is b for a, b in zip(predicates, expected))
++        )
++
++    def record(self, path, subkeys):
++        if subkeys is False:
++            self._overrides.pop(path, None)
++            return
++        previous = self._overrides.get(path, (None, ()))[1]
++        groups = True if subkeys is True or previous is True else previous + (subkeys,)
++        self._overrides[path] = self._differs[path], groups
++
++    def ignores(self, config):
++        if not self.matches(config):
++            return None
++        rules = {}
++        for path, (_, groups) in self._overrides.items():
++            if type(path) is not str:
++                return None
++            if groups is True:
++                rules[path] = True
++                continue
++            keys = []
++            for group in groups:
++                if type(group) not in (list, tuple, set) or any(type(key) is not str for key in group):
++                    return None
++                keys.extend(group)
++            rules[path] = keys
++        return rules
++
++
++def _uniform_documents(*documents):
++    """Check that the engine can preserve container types and scalar equality."""
++    mapping = type(documents[0])
++    if mapping not in (dict, NotebookNode) or any(type(doc) is not mapping for doc in documents):
++        return False
++    pending = list(documents)
++    visited = set()
++    while pending:
++        value = pending.pop()
++        kind = type(value)
++        if kind is mapping or kind is list:
++            if id(value) in visited:
++                continue
++            visited.add(id(value))
++            if kind is list:
++                pending.extend(value)
++            else:
++                if (
++                    value.get("output_type") in ("display_data", "execute_result")
++                    and "data" in value
++                    and list(value)[-1] != "data"
++                ):
++                    # The Python notebook differ moves this key to the end in place.
++                    return False
++                pending.extend(value.values())
++        elif kind is float:
++            if isnan(value):
++                return False
++        elif kind not in (str, int, bool, type(None)):
++            return False
++    return True
++
++
++def _custom_diff_has_mappings(entries):
++    pending = list(entries or ())
++    while pending:
++        entry = pending.pop()
++        if entry["op"] == "patch":
++            pending.extend(entry["diff"])
++        else:
++            values = [entry.get("value"), entry.get("valuelist")]
++            while values:
++                value = values.pop()
++                if isinstance(value, dict):
++                    return True
++                if isinstance(value, list):
++                    values.extend(value)
++    return False
++
++
++def _call(name, *args, **kwargs):
++    try:
++        return getattr(_engine, name)(*args, **kwargs)
++    except (_engine.EngineError, TypeError, ValueError, RuntimeError):
++        return None
++
++
++def _diff_entries(entries, notebook_values):
++    if entries is None:
++        return None
++    diff = []
++    for data in entries:
++        entry = DiffEntry(data)
++        if entry.op == "patch":
++            entry.diff = _diff_entries(entry.diff, notebook_values)
++        elif notebook_values:
++            if "value" in entry:
++                entry.value = from_dict(entry.value)
++            if "valuelist" in entry:
++                entry.valuelist = from_dict(entry.valuelist)
++        diff.append(entry)
++    return diff
++
++
++def diff_notebooks(a, b, config, options):
++    if not enabled():
++        return None
++    ignores = options.ignores(config)
++    if ignores is None or not _uniform_documents(a, b):
++        return None
++    diff = _call("diff_notebooks", a, b, ignores=ignores)
++    return _diff_entries(diff, isinstance(b, NotebookNode))
++
++
++def merge_decisions(base, local, remote, args, config, options):
++    if not enabled():
++        return None
++    ignores = options.ignores(config)
++    if ignores is None or not _uniform_documents(base, local, remote):
++        return None
++    merge_args = None
++    if args:
++        if type(args) not in (Namespace, SimpleNamespace) or getattr(args, "log_level", "DEBUG") == "DEBUG":
++            return None
++        try:
++            merge_args = {
++                name: getattr(args, name)
++                for name in ("merge_strategy", "input_strategy", "output_strategy", "ignore_transients")
++            }
++        except AttributeError:
++            return None
++    result = _call("decide_notebook_merge", base, local, remote, merge_args, ignores=ignores)
++    if result is None or any(_custom_diff_has_mappings(d.get("custom_diff")) for d in result):
++        return None
++
++    from .merging.decisions import MergeDecision
++
++    decisions = []
++    for data in result:
++        decision = MergeDecision(data)
++        decision.common_path = tuple(decision.common_path)
++        decision.local_diff = _diff_entries(decision.local_diff, isinstance(local, NotebookNode))
++        decision.remote_diff = _diff_entries(decision.remote_diff, isinstance(remote, NotebookNode))
++        if "similar_insert" in decision:
++            decision.similar_insert = _diff_entries(decision.similar_insert, isinstance(remote, NotebookNode))
++        if "custom_diff" in decision:
++            decision.custom_diff = _diff_entries(decision.custom_diff, False)
++        decisions.append(decision)
++    return decisions
+diff --git a/nbdime/diffing/notebooks.py b/nbdime/diffing/notebooks.py
+index 30a86fd..ccc7015 100644
+--- a/nbdime/diffing/notebooks.py
++++ b/nbdime/diffing/notebooks.py
+@@ -15,6 +15,7 @@ import re
+ import copy
+ from functools import lru_cache
+ 
++from .. import _accel
+ from ..diff_format import MappingDiffBuilder, DiffOp
+ from ..utils import defaultdict2
+ 
+@@ -556,11 +557,15 @@ notebook_config = DiffConfig(
+ )
+ 
+ 
++_accel_options = _accel.NotebookOptions(notebook_config, diff, operator.__eq__)
++
++
+ def reset_notebook_differ():
+     """Reset the notebook_differs dictionary to default values."""
+     # As it is a defaultdict2, simply clear all set keys to reset:
+     for key in tuple(notebook_differs.keys()):
+         del notebook_differs[key]
++    _accel_options.reset()
+ 
+ 
+ def set_notebook_diff_ignores(ignore_paths):
+@@ -575,6 +580,7 @@ def set_notebook_diff_ignores(ignore_paths):
+             - if value is set/tuple/list, assume the container is a collection
+               of subkeys of path to ignore with `diff_ignore_keys`.
+     """
++    tracking = _accel_options.matches(notebook_config)
+     for path, subkeys in ignore_paths.items():
+         if subkeys is True:
+             notebook_differs[path] = diff_ignore
+@@ -585,6 +591,8 @@ def set_notebook_diff_ignores(ignore_paths):
+             notebook_differs[path] = diff_ignore_keys(notebook_differs[path], subkeys)
+         else:
+             raise ValueError('Invalid ignore config entry: %r: %r' % (path, subkeys))
++        if tracking:
++            _accel_options.record(path, subkeys)
+ 
+ 
+ def set_notebook_diff_targets(sources=True, outputs=True, attachments=True,
+@@ -621,6 +629,14 @@ def diff_notebooks(a, b):
+ 
+     The notebooks are expected in the format of nbformat's version 4.
+     """
++    if isinstance(a, dict) and isinstance(b, dict):
++        result = _accel.diff_notebooks(a, b, notebook_config, _accel_options)
++        if result is not None:
++            return result
++    return _diff_notebooks(a, b)
++
++
++def _diff_notebooks(a, b):
+     if not (isinstance(a, dict) and isinstance(b, dict)):
+         raise TypeError("Expected inputs to be dicts, got %r and %r" % (a, b))
+     return diff(a, b, path="", config=notebook_config)
+diff --git a/nbdime/merging/notebooks.py b/nbdime/merging/notebooks.py
+index e81072d..1d7a89a 100644
+--- a/nbdime/merging/notebooks.py
++++ b/nbdime/merging/notebooks.py
+@@ -9,7 +9,9 @@ from io import StringIO
+ 
+ from .generic import decide_merge_with_diff
+ from .decisions import apply_decisions
+-from ..diffing.notebooks import diff_notebooks
++from .. import _accel
++from ..diffing import notebooks as notebook_diffing
++from ..diffing.notebooks import _diff_notebooks as diff_notebooks
+ from ..utils import Strategies
+ from ..prettyprint import (
+     pretty_print_notebook_diff,
+@@ -130,6 +132,11 @@ def notebook_merge_strategies(args):
+ 
+ 
+ def decide_notebook_merge(base, local, remote, args=None):
++    result = _accel.merge_decisions(
++        base, local, remote, args, notebook_diffing.notebook_config, notebook_diffing._accel_options)
++    if result is not None:
++        return result
++
+     # Build merge strategies for each document path from arguments
+     strategies = notebook_merge_strategies(args)
+ 
+diff --git a/nbdime/tests/test_accel.py b/nbdime/tests/test_accel.py
+new file mode 100644
+index 0000000..52b379e
+--- /dev/null
++++ b/nbdime/tests/test_accel.py
+@@ -0,0 +1,200 @@
++# Copyright (c) Jupyter Development Team.
++# Distributed under the terms of the Modified BSD License.
++
++from types import SimpleNamespace
++
++import nbformat
++import pytest
++
++from nbdime import _accel, diff_notebooks, merge_notebooks
++from nbdime.diff_format import DiffEntry
++from nbdime.diffing import notebooks
++from nbdime.merging.decisions import MergeDecision
++
++
++class EngineError(Exception):
++    pass
++
++
++@pytest.fixture
++def engine(monkeypatch):
++    engine = SimpleNamespace(
++        NBDIME_COMPAT=_accel.__version__,
++        EngineError=EngineError,
++        calls=[],
++    )
++
++    def diff(a, b, *, ignores):
++        engine.calls.append(("diff", ignores))
++        return [{"op": "add", "key": "accelerated", "value": {"nested": 1}}]
++
++    def merge(base, local, remote, args, *, ignores):
++        engine.calls.append(("merge", ignores, args))
++        return [{
++            "common_path": [],
++            "conflict": False,
++            "action": "local",
++            "local_diff": diff(base, local, ignores=ignores),
++            "remote_diff": None,
++        }]
++
++    engine.diff_notebooks = diff
++    engine.decide_notebook_merge = merge
++    monkeypatch.setattr(_accel, "_engine", engine)
++    monkeypatch.setenv("NBDIME_ACCEL", "1")
++    notebooks.reset_notebook_differ()
++    yield engine
++    notebooks.reset_notebook_differ()
++
++
++def test_accelerated_result_types(engine):
++    nb = nbformat.v4.new_notebook()
++    result = diff_notebooks(nb, nb)
++    assert isinstance(result[0], DiffEntry)
++    assert isinstance(result[0].value, nbformat.NotebookNode)
++
++    merged, decisions = merge_notebooks(nb, nb, nb)
++    assert isinstance(decisions[0], MergeDecision)
++    assert isinstance(decisions[0].common_path, tuple)
++    assert isinstance(decisions[0].local_diff[0], DiffEntry)
++    assert merged.accelerated.nested == 1
++    assert ("merge", {}, None) in engine.calls
++
++
++@pytest.mark.parametrize("reason", ["disabled", "missing", "incompatible", "conversion"])
++def test_pure_python_fallback(engine, monkeypatch, reason):
++    if reason == "disabled":
++        monkeypatch.setenv("NBDIME_ACCEL", "0")
++    elif reason == "missing":
++        monkeypatch.setattr(_accel, "_engine", None)
++    elif reason == "incompatible":
++        engine.NBDIME_COMPAT = "incompatible"
++    else:
++        def fail(*args, **kwargs):
++            raise EngineError("fallback")
++        engine.diff_notebooks = fail
++        engine.decide_notebook_merge = fail
++
++    nb = nbformat.v4.new_notebook()
++    assert diff_notebooks(nb, nb) == []
++    assert merge_notebooks(nb, nb, nb) == (nb, [])
++    assert not engine.calls
++
++
++def test_supported_ignores_are_tracked(engine):
++    keys = ["first"]
++    notebooks.set_notebook_diff_ignores({"/metadata": keys})
++    notebooks.set_notebook_diff_ignores({"/metadata": ("second",)})
++    keys.append("third")
++    diff_notebooks({}, {})
++    assert engine.calls[-1] == ("diff", {"/metadata": ["first", "third", "second"]})
++
++    notebooks.set_notebook_diff_targets(metadata=False)
++    diff_notebooks({}, {})
++    assert engine.calls[-1][1]["/metadata"] is True
++
++    notebooks.reset_notebook_differ()
++    diff_notebooks({}, {})
++    assert engine.calls[-1] == ("diff", {})
++
++
++def test_custom_differ_keeps_python_configuration(engine, monkeypatch):
++    calls = []
++
++    def custom(a, b, **kwargs):
++        calls.append((a, b))
++        return []
++
++    monkeypatch.setitem(notebooks.notebook_differs, "/metadata", custom)
++    a, b = {"metadata": {"a": 1}}, {"metadata": {"a": 2}}
++    assert diff_notebooks(a, b) == []
++    assert calls == [(a["metadata"], b["metadata"])]
++    assert not engine.calls
++
++
++def test_custom_predicate_disables_acceleration(engine, monkeypatch):
++    a = {"cells": []}
++    monkeypatch.setitem(notebooks.notebook_predicates, "/cells", [lambda a, b: False])
++    assert diff_notebooks(a, a) == []
++    assert not engine.calls
++
++
++def test_disabled_does_not_import_engine(monkeypatch):
++    def unexpected(*args, **kwargs):
++        pytest.fail("the disabled engine was imported")
++
++    monkeypatch.setenv("NBDIME_ACCEL", "0")
++    monkeypatch.setattr(_accel, "_engine", _accel._UNLOADED)
++    monkeypatch.setattr(_accel, "import_module", unexpected)
++    assert diff_notebooks({}, {}) == []
++
++
++def test_mixed_notebook_payloads_keep_their_python_types(engine):
++    a = nbformat.v4.new_notebook()
++    b = nbformat.v4.new_notebook()
++    b.metadata["extra"] = [{"nested": 1}]
++    result = diff_notebooks(a, b)
++    assert type(result[0].diff[0].value[0]) is dict
++    assert not engine.calls
++
++
++def test_custom_default_differ_with_value_equality(engine, monkeypatch):
++    class Differ:
++        def __eq__(self, other):
++            return True
++
++        def __call__(self, *args, **kwargs):
++            return []
++
++    monkeypatch.setitem(notebooks.notebook_differs.default_values, "/cells/*/source", Differ())
++    a = nbformat.v4.new_notebook(cells=[nbformat.v4.new_code_cell("one", id="id")])
++    b = nbformat.v4.new_notebook(cells=[nbformat.v4.new_code_cell("two", id="id")])
++    assert diff_notebooks(a, b) == []
++    assert not engine.calls
++
++
++def test_custom_object_diffs_keep_notebook_nodes(engine):
++    def custom_merge(*args, **kwargs):
++        return [{"custom_diff": [{"op": "addrange", "key": 0, "valuelist": [{"source": "plain"}]}]}]
++
++    engine.decide_notebook_merge = custom_merge
++    base = nbformat.v4.new_notebook()
++    local = nbformat.v4.new_notebook(cells=[nbformat.v4.new_code_cell("print('left')", id="lc")])
++    remote = nbformat.v4.new_notebook(cells=[nbformat.v4.new_markdown_cell("different", id="rc")])
++    _, decisions = merge_notebooks(base, local, remote)
++    assert all(isinstance(cell, nbformat.NotebookNode)
++               for cell in decisions[0].custom_diff[0].valuelist)
++
++
++def test_similar_insert_is_a_diff(engine):
++    def merge(*args, **kwargs):
++        return [{
++            "common_path": [],
++            "conflict": False,
++            "action": "local",
++            "local_diff": [],
++            "remote_diff": [],
++            "similar_insert": [
++                {"op": "patch", "key": 0, "diff": [{"op": "replace", "key": "source", "value": "new"}]},
++            ],
++        }]
++
++    engine.decide_notebook_merge = merge
++    base = nbformat.v4.new_notebook()
++    _, decisions = merge_notebooks(base, base, base)
++    entry = decisions[0].similar_insert[0]
++    assert isinstance(entry, DiffEntry)
++    assert isinstance(entry.diff[0], DiffEntry)
++    assert entry.diff[0].value == "new"
++
++
++def test_display_output_order_follows_python_behavior(engine):
++    left = nbformat.NotebookNode(output_type="display_data", data=nbformat.NotebookNode(), metadata=nbformat.NotebookNode())
++    right = nbformat.NotebookNode(output_type="display_data", data=nbformat.NotebookNode(), metadata=nbformat.NotebookNode())
++    left.data["text/plain"] = "first"
++    right.data["text/plain"] = "second"
++    a = nbformat.v4.new_notebook(cells=[nbformat.v4.new_code_cell(id="id", outputs=[left])])
++    b = nbformat.v4.new_notebook(cells=[nbformat.v4.new_code_cell(id="id", outputs=[right])])
++    diff_notebooks(a, b)
++    assert list(left)[-1] == list(right)[-1] == "data"
++    assert not engine.calls
+diff --git a/pyproject.toml b/pyproject.toml
+index f8ed0cd..ae5a334 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -67,6 +67,7 @@ hg-nbmerge = "nbdime.vcs.hg.merge:main"
+ hg-nbmergeweb = "nbdime.vcs.hg.mergeweb:main"
+ 
+ [project.optional-dependencies]
++accel = ["nbdime-rs>=0.1,<0.2; python_version >= '3.9'"]
+ test = [
+     "pytest>=6.0",
+     "pytest-cov",
+-- 
+2.43.0
+

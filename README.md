@@ -5,9 +5,9 @@ Jupyter notebooks. The goal is a drop-in replacement for nbdime's terminal and g
 with the same output, that is far faster. A second goal is an optional accelerated engine that
 upstream nbdime could use.
 
-**Status: work in progress (November 2026).** `nbdiff` and `nbmerge` are complete and match
-upstream byte for byte on the parity suite. `nbshow`, `nbpatch`, the git drivers and the Python
-package are in progress. See [What works](#what-works) and [What is still to come](#what-is-still-to-come).
+**Status (November 2026).** The CLI, Git integration and optional Python engine pass the
+129-test parity gate. Known differences are documented below. The larger seeded differential
+runs are in progress. See [What works](#what-works) and [Current state](docs/STATE.md).
 
 ## Why
 
@@ -131,12 +131,9 @@ decision, in [docs/findings.md](docs/findings.md). The ones a user might notice:
 
 ## What is still to come
 
-- `nbshow` with Pygments-compatible syntax highlighting, and `nbpatch` (in progress).
-- The git diff and merge drivers, difftool/mergetool configuration, clean-filter support, and
-  `nbdime config-git` (in progress).
-- The Python package `nbdime_rs` (PyO3), which upstream nbdime can use as an optional accelerated
-  engine, falling back to pure Python when the engine declines an input (F-017).
-- Large differential runs, further performance work, and packaging (wheels and crates).
+- Large differential runs and further performance work.
+- Distribution packaging. The optional `nbdime_rs` Python extension has a locally verified
+  x86-64 manylinux2014 wheel. The upstream integration is prepared in a local patch.
 - The web UI (`nbdiff-web`, `nbmerge-web`, the server and the Jupyter extensions) is out of
   scope.
 

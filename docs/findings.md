@@ -687,3 +687,42 @@ merge argument names. Decisions convert with `merging::decisions_to_value` / `de
   equals the textbook table for any compare relation, not only equivalences, because the
   derivation uses only the recurrence; the backtrack reads `R[x][y]` from the bit rows and is
   unchanged. Checked against the textbook table on 400 random relations of up to 150x150.
+
+
+### F-047: U08 terminal and regex review
+
+- `nbshow --help` and `nbdime show --help` now use the same ignorables group as upstream.
+  Both forms have byte-for-byte CLI parity cases.
+- The regex engine now matches CPython 3.13 on `(?i)[a-z]` with dotted capital I, literal
+  nonbreaking spaces in verbose patterns, and `\B` on empty input. Unit tests cover the
+  cases directly because the bundled lexers do not exercise those patterns.
+- Explicit Python stream encodings remain a CLI deviation. For `PYTHONIOENCODING=latin-1`,
+  piping ASCII JSON with a Markdown source of `"\u00e9\n"` to `nbshow -s -` yields byte
+  `e9` from upstream and UTF-8 bytes `c3 a9` from Rust. A literal Latin-1 byte in that JSON
+  is accepted by upstream and rejected by the Rust UTF-8 stdin reader.
+
+### F-048: U14 clean-filter and merge diagnostics review
+
+- The clean filter uses UTF-8 replacement decoding for `git check-attr`, inherits Git config
+  stderr and refuses a remote directory before launching the filter. Regression cases cover
+  an undecodable path, malformed `GIT_CONFIG` and a filter that emits a notebook without reading
+  stdin.
+- Merge output reports duplicate-cell-ID repairs at warning level. Rust uses the stable
+  `nbformat/validator.py` suffix for the warning location. The Git harness normalizes the
+  absolute installation prefix and Git-generated `.merge_file_XXXXXX` name. It still compares
+  the complete warning, other stderr, exit status and notebook contents under the existing
+  cell-ID normalization.
+
+### F-049: P4 public helper compatibility
+
+`quick_ratio_sorted` is restored with its original signature and multiplicity semantics.
+Notebook matching still uses the counted fast path.
+
+### F-050: local optional engine integration
+
+The adapter loads the wheel lazily, verifies its compatibility, tracks supported ignore and
+target settings, and reconstructs the Python diff and merge-decision types. It uses Python
+for custom configurations, mixed container trees, output key-order side effects and custom
+merge payloads with ambiguous object types. The prototype was tested on nbdime v4.0.4.
+Remaining Rust deviations, including F-019 and F-027, need an upstream acceptance decision
+before enabling the engine for upstream users. The change is prepared locally.

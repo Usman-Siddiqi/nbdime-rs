@@ -55,5 +55,6 @@ jobs:
           export NBDIME_REF_BIN="$(dirname "$(command -v nbdiff)")"
           export NBDIME_REF_PYTHON="$(command -v python)"
           git config --global user.name ci && git config --global user.email ci@example.com
-          mapfile -t suites < <(grep -v '^\s*#' parity/enabled_suites.txt | sed '/^\s*$/d' | sed 's#^#parity/#')
-          python -m pytest -c parity/pytest.ini -p no:tornasync "${suites[@]}"
+          # Suite names have no spaces; macOS's bash 3.2 has no mapfile.
+          suites=$(grep -v '^\s*#' parity/enabled_suites.txt | sed '/^\s*$/d' | sed 's#^#parity/#')
+          python -m pytest -c parity/pytest.ini -p no:tornasync $suites

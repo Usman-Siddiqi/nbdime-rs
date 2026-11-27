@@ -241,6 +241,7 @@ dependencies = [
  "anyhow",
  "libc",
  "nbdime-core",
+ "windows-sys",
 ]
 
 [[package]]

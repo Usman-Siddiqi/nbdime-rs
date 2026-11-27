@@ -21,6 +21,7 @@ pub mod nbshowapp;
 pub mod osstr;
 pub mod pathexpand;
 pub mod revparse;
+pub mod stdstreams;
 #[cfg(test)]
 mod testutil;
 pub mod utils;
@@ -43,7 +44,7 @@ type Entry = fn(&str, &[String], &mut dyn Write) -> anyhow::Result<i32>;
 
 fn run_entry(entry: Entry, prog: &str, args: &[String]) -> i32 {
     let stdout = io::stdout();
-    let mut out = io::BufWriter::new(stdout.lock());
+    let mut out = stdstreams::Stdout(io::BufWriter::new(stdout.lock()));
     let result =
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| entry(prog, args, &mut out)));
     let _ = out.flush();

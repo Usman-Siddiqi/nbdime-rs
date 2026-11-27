@@ -60,6 +60,7 @@ pub fn build_parser(prog: &str) -> Parser {
 /// Runs `nbmerge` with the arguments `args` (without the program name) and returns the exit
 /// status.
 pub fn main(prog: &str, args: &[String], out: &mut dyn Write) -> Result<i32> {
+    crate::stdstreams::setup_std_streams();
     run(&Context::process(), prog, args, out)
 }
 

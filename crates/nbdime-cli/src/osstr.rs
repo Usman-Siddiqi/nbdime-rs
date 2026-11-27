@@ -2,7 +2,6 @@
 //! [`nbdime_core::fsname`] for the encoding).
 
 use std::ffi::OsStr;
-use std::io::{self, Write};
 
 use nbdime_core::fsname::for_output;
 pub use nbdime_core::fsname::{from_bytes, to_bytes, to_os, to_path};
@@ -71,10 +70,9 @@ pub fn repr(text: &str) -> String {
     out
 }
 
-/// Writes text to stderr; failures are ignored. Python's standard streams write `"\n"` as is,
-/// on Windows too; only files opened in text mode translate it.
+/// Writes text to stderr as the Python process would; failures are ignored.
 pub fn eprint(text: &str) {
-    let _ = io::stderr().lock().write_all(text.as_bytes());
+    crate::stdstreams::eprint(text);
 }
 
 /// `fs::canonicalize` without Windows' `\\?\` prefix, which git and Python's paths do not use.

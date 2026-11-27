@@ -113,6 +113,7 @@ fn filtered_remote(ns: &Namespace) -> Result<Option<Source>> {
 
 /// Runs `git-nbdiffdriver` with the arguments `args` (without the program name).
 pub fn main(prog: &str, args: &[String], out: &mut dyn Write) -> Result<i32> {
+    crate::stdstreams::setup_std_streams();
     run(&Context::process(), prog, args, out)
 }
 

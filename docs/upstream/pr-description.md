@@ -18,6 +18,8 @@ This adds the optional Rust engine we talked about. It comes from the separate
   actually ran.
 - With `NBDIME_ACCEL=1`, if the engine hits an error it logs it at debug level and uses the
   Python code. Custom differs/predicates and anything it can't represent always use Python.
+- Conflict marker cells from the inline merge strategies get stable ids instead of random ones.
+  Everything else in the result is the same.
 - The public API doesn't change. Results come back as the normal `DiffEntry`, `MergeDecision`
   and `NotebookNode` objects.
 - Building nbdime doesn't need Rust. The `accel` extra pulls in a prebuilt wheel.
@@ -44,12 +46,12 @@ rerun with `bench/upstream_engine.py` from nbdime-rs)
 
 | Notebook | Diff: Python | Diff: engine | Merge: Python | Merge: engine |
 |---|---:|---:|---:|---:|
-| 100 cells | 6.3 ms | 1.6 ms | 14 ms | 5.2 ms |
-| 400 cells | 47 ms | 5.9 ms | 106 ms | 21 ms |
-| 1,600 cells | 578 ms | 28 ms | 1.23 s | 107 ms |
-| 400 cells, no ids | 1.90 s | 9.6 ms | 3.76 s | 28 ms |
-| 1,600 cells, no ids | 29.2 s | 92 ms | 58.5 s | 59.6 s (falls back to Python) |
+| 100 cells | 6.5 ms | 1.4 ms | 16 ms | 5.2 ms |
+| 400 cells | 44 ms | 5.8 ms | 104 ms | 20 ms |
+| 1,600 cells | 661 ms | 29 ms | 1.21 s | 107 ms |
+| 400 cells, no ids | 1.82 s | 9.6 ms | 3.49 s | 28 ms |
+| 1,600 cells, no ids | 30.4 s | 114 ms | 60.8 s | 241 ms |
 
-Full `nbdiff` on the 1,600-cell notebook without ids: 30.5 s with the engine off, 1.3 s with it
+Full `nbdiff` on the 1,600-cell notebook without ids: 32 s with the engine off, 1.2 s with it
 on. It gets better as notebooks get bigger, because the Python cell matching grows faster than
 the number of cells.

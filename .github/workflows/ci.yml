@@ -69,6 +69,9 @@ jobs:
               for bad in case.findall("failure") + case.findall("error"):
                   lines = (bad.get("message") or "").splitlines()
                   print("%s::%s  %s" % (case.get("classname"), case.get("name"), lines[0][:160] if lines else ""))
-                  # The first differing line of each reported case.
-                  for line in [l for l in lines if " differs (line " in l][:4]:
+                  # Each reported case: its command and what differs, without the full outputs.
+                  shown = [l for l in lines if l.startswith(("nb", "git-nb", "exit code"))
+                           or " differs (line " in l or "emptiness differs" in l
+                           or l.startswith(("E  ", "FAILED", "ERROR", "XPASS"))]
+                  for line in shown[:16]:
                       print("    " + line.strip()[:400])

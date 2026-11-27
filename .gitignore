@@ -9,3 +9,5 @@
 CLAUDE.md
 AGENTS.md
 agent.md
+/crates/nbdime-py/wheel-data/
+/dist/

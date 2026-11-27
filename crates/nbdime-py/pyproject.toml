@@ -14,6 +14,19 @@ classifiers = [
     "Programming Language :: Rust",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: Implementation :: CPython",
+    "Framework :: Jupyter",
+    "Topic :: Software Development :: Version Control :: Git",
+    "Environment :: Console",
+    "Operating System :: OS Independent",
 ]
 dynamic = ["version"]
+keywords = ["jupyter", "notebook", "diff", "merge", "git", "nbdime"]
 
+[project.urls]
+Homepage = "https://github.com/Usman-Siddiqi/nbdime-rs"
+Source = "https://github.com/Usman-Siddiqi/nbdime-rs"
+Issues = "https://github.com/Usman-Siddiqi/nbdime-rs/issues"
+
+# The published wheels also carry the command line tools: scripts/build_wheel.py stages them and
+# builds with `data = "wheel-data"` added here. A build from the sdist has the module only.
+[tool.maturin]

@@ -47,6 +47,8 @@ jobs:
       - name: Parity suites
         env:
           NBDIME_UPSTREAM: ${{ runner.temp }}/nbdime-upstream
+          # The harness itself writes generated text with Python's default encoding.
+          PYTHONUTF8: "1"
         run: |
           if [ "$RUNNER_OS" = Windows ]; then
             # diff, diff3 and the POSIX tools upstream's renderers and tests call.

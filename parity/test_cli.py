@@ -193,6 +193,16 @@ def _unside(case, which, result, root):
     return code, clean(so), clean(se), clean(data), args
 
 
+def _first_difference(a, b):
+    """The first differing line of two outputs, with control characters visible."""
+    la, lb = a.splitlines(keepends=True), b.splitlines(keepends=True)
+    for i, (x, y) in enumerate(zip(la, lb)):
+        if x != y:
+            return "line %d: upstream %r, ours %r" % (i + 1, x[:200], y[:200])
+    return "line %d: upstream %r, ours %r" % (
+        min(len(la), len(lb)) + 1, b"".join(la[len(lb):])[:200], b"".join(lb[len(la):])[:200])
+
+
 def check_cli(cases, root, env, min_cases):
     assert len(cases) >= min_cases, "only %d cases, need %d" % (len(cases), min_cases)
     for n, c in enumerate(cases):
@@ -208,14 +218,16 @@ def check_cli(cases, root, env, min_cases):
         if ref[0] != ours[0]:
             problems.append("exit code %r != %r" % (ours[0], ref[0]))
         if ref[1] != ours[1]:
-            problems.append("stdout differs:\n--- upstream\n%s\n--- ours\n%s" % (
+            problems.append("stdout differs (%s):\n--- upstream\n%s\n--- ours\n%s" % (
+                _first_difference(ref[1], ours[1]),
                 ref[1].decode("utf-8", "replace")[:3000], ours[1].decode("utf-8", "replace")[:3000]))
         if ref[3] != ours[3]:
             problems.append("output file differs: upstream %s, ours %s" % (
                 None if ref[3] is None else ref[3][:2000], None if ours[3] is None else ours[3][:2000]))
         policy = _stderr_policy(case, ref)
         if policy == "exact" and ref[2] != ours[2]:
-            problems.append("stderr differs:\n--- upstream\n%s\n--- ours\n%s" % (
+            problems.append("stderr differs (%s):\n--- upstream\n%s\n--- ours\n%s" % (
+                _first_difference(ref[2], ours[2]),
                 ref[2].decode("utf-8", "replace")[:2000], ours[2].decode("utf-8", "replace")[:2000]))
         elif policy == "nonempty" and bool(ref[2]) != bool(ours[2]):
             problems.append("stderr emptiness differs: upstream %r, ours %r" % (ref[2][:500], ours[2][:500]))

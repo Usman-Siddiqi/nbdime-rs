@@ -233,26 +233,49 @@ fn resolve(path: &Path) -> PathBuf {
 /// prefix is replaced by `$VIRTUAL_ENV` or `$CONDA_PREFIX`, and Python's user site directory is
 /// not searched (it is off in virtual environments; findings F-029, F-031).
 pub fn jupyter_config_path(env: &dyn Env) -> Result<Vec<String>, ConfigError> {
+    config_path_for(env, cfg!(windows))
+}
+
+fn config_path_for(env: &dyn Env, windows: bool) -> Result<Vec<String>, ConfigError> {
     if non_empty(env, "JUPYTER_NO_CONFIG").is_some() {
         return Ok(Vec::new());
     }
+    let (sep, pathsep) = if windows { ('\\', ';') } else { ('/', ':') };
     let mut paths = Vec::new();
     if let Some(list) = non_empty(env, "JUPYTER_CONFIG_PATH") {
-        paths.extend(list.split(':').map(|p| p.trim_end_matches('/').to_owned()));
+        paths.extend(
+            list.split(pathsep)
+                .map(|p| p.trim_end_matches(sep).to_owned()),
+        );
     }
     let user = match non_empty(env, "JUPYTER_CONFIG_DIR") {
         Some(dir) => dir,
-        None => format!("{}/.jupyter", home_dir(env)?.trim_end_matches('/')),
+        None => {
+            let home = home_dir(env)?;
+            format!("{}{sep}.jupyter", home.trim_end_matches(sep))
+        }
     };
     let virtual_env = non_empty(env, "VIRTUAL_ENV");
     let prefix = virtual_env
         .clone()
         .or_else(|| non_empty(env, "CONDA_PREFIX"));
-    let system = ["/usr/local/etc/jupyter", "/etc/jupyter"];
-    let env_dirs: Vec<String> = prefix
-        .map(|p| format!("{p}/etc/jupyter"))
+    let env_dir = prefix.map(|p| format!("{p}{sep}etc{sep}jupyter"));
+    // Windows has no system directory unless JUPYTER_USE_PROGRAMDATA asks for %PROGRAMDATA%.
+    let system: Vec<String> = if windows {
+        let programdata = envset(env, "JUPYTER_USE_PROGRAMDATA")
+            .unwrap_or(false)
+            .then(|| non_empty(env, "PROGRAMDATA"))
+            .flatten();
+        programdata
+            .map(|p| format!("{p}\\jupyter"))
+            .into_iter()
+            .collect()
+    } else {
+        vec!["/usr/local/etc/jupyter".into(), "/etc/jupyter".into()]
+    };
+    let env_dirs: Vec<String> = env_dir
         .into_iter()
-        .filter(|p| !system.contains(&p.as_str()))
+        .filter(|p| !system.contains(p))
         .collect();
     let prefer_env = envset(env, "JUPYTER_PREFER_ENV_PATH").unwrap_or_else(|| {
         virtual_env.is_some()
@@ -266,7 +289,7 @@ pub fn jupyter_config_path(env: &dyn Env) -> Result<Vec<String>, ConfigError> {
         paths.push(user);
         paths.extend(env_dirs);
     }
-    paths.extend(system.map(str::to_owned));
+    paths.extend(system);
     Ok(paths)
 }
 
@@ -563,7 +586,7 @@ mod tests {
         ));
     }
 
-    // POSIX paths and HOME; the Windows locations are not ported (F-051).
+    // POSIX paths and HOME; checked on Unix only.
     #[cfg(unix)]
     #[test]
     fn config_path_order_and_expansion() {
@@ -599,7 +622,33 @@ mod tests {
         assert!(jupyter_config_path(&none).unwrap().is_empty());
     }
 
-    // POSIX paths and HOME; the Windows locations are not ported (F-051).
+    #[test]
+    fn windows_locations_follow_jupyter_core() {
+        let vars = |pairs: &[(&str, &str)]| -> HashMap<String, String> {
+            pairs
+                .iter()
+                .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+                .collect()
+        };
+        let env = vars(&[
+            ("JUPYTER_CONFIG_DIR", r"C:\u\.jupyter"),
+            ("JUPYTER_CONFIG_PATH", r"C:\a\;D:\b"),
+            ("VIRTUAL_ENV", r"C:\venv"),
+            ("PROGRAMDATA", r"C:\ProgramData"),
+        ]);
+        assert_eq!(
+            config_path_for(&env, true).unwrap(),
+            [r"C:\a", r"D:\b", r"C:\venv\etc\jupyter", r"C:\u\.jupyter"]
+        );
+        let mut opted_in = env.clone();
+        opted_in.insert("JUPYTER_USE_PROGRAMDATA".into(), "1".into());
+        assert_eq!(
+            config_path_for(&opted_in, true).unwrap().last().unwrap(),
+            r"C:\ProgramData\jupyter"
+        );
+    }
+
+    // POSIX paths and HOME; checked on Unix only.
     #[cfg(unix)]
     #[test]
     fn the_user_site_directory_is_not_searched() {
@@ -619,7 +668,7 @@ mod tests {
             .all(|p| !p.starts_with("/ub")));
     }
 
-    // POSIX paths and HOME; the Windows locations are not ported (F-051).
+    // POSIX paths and HOME; checked on Unix only.
     #[cfg(unix)]
     #[test]
     fn home_unset_uses_the_passwd_entry() {
@@ -630,7 +679,7 @@ mod tests {
         assert!(path[0].ends_with("/.jupyter"), "{path:?}");
     }
 
-    // POSIX paths and HOME; the Windows locations are not ported (F-051).
+    // POSIX paths and HOME; checked on Unix only.
     #[cfg(unix)]
     #[test]
     fn config_dirs_are_expanded_like_a_shell() {

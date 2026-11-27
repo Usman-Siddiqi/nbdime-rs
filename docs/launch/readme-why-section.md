@@ -1,6 +1,8 @@
 <!--
 Notes for Usman. Paste this near the top of README.md once nbdime-rs is on PyPI, replacing the
 current "Why" section. The numbers come from the Performance table already in the README.
+- The README still says the git diff/merge drivers "are being ported", but the binaries exist.
+  Confirm they are finished (and update that README line) before claiming git driver support.
 -->
 
 ## Why use this?

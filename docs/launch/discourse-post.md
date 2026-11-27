@@ -3,6 +3,8 @@ Notes for Usman. Delete before posting.
 - Post on discourse.jupyter.org in the "Show and Tell" category, only once `pip install nbdime-rs`
   actually works and gives people the CLI.
 - If you've already opened the nbdime issue, link it at the end so people can weigh in there.
+- The README still says the git diff/merge drivers "are being ported", but the binaries exist.
+  Confirm they are finished (and update that README line) before claiming git driver support.
 -->
 
 # nbdime-rs: a much faster nbdiff/nbmerge for big notebooks

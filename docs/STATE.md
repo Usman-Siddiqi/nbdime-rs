@@ -28,6 +28,11 @@ in `docs/findings.md`.
    and `force`. The only other failure in each mode is the JS-artifacts test. Keep the
    prototype local and ask the owner before each upstream action. The proposal and PR
    description drafts are in `docs/upstream/`.
+3. Upstream plan (owner agreed 2026-11-27): the engine is now opt-in (`NBDIME_ACCEL=1`; unset
+   or `0` never imports it), re-verified against v4.0.4 with the real extension. The drafts
+   disclose AI authorship and lead with testing. Order: publish nbdime-rs to PyPI with Linux,
+   macOS and Windows wheels, then post `proposal.md` as an issue, then the PR only if invited.
+   The proposal also offers a minimal plugin hook as a smaller alternative.
 
 ## Workflow
 

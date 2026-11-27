@@ -1,4 +1,4 @@
-From f63f9842808a3b663221529700f1dff48d105b02 Mon Sep 17 00:00:00 2001
+From 25e09663ed8a8e7693641ef13f6ebe4c59fcbdc0 Mon Sep 17 00:00:00 2001
 From: Usman-Siddiqi <119256979+Usman-Siddiqi@users.noreply.github.com>
 Date: Fri, 27 Nov 2026 03:28:51 +0000
 Subject: [PATCH] Add optional Rust notebook diff and merge acceleration
@@ -14,21 +14,21 @@ the extension is missing, incompatible or reports an error. With
 NBDIME_ACCEL=1 an engine error is logged at debug level and the Python
 implementation is used.
 ---
- nbdime/_accel.py            | 295 +++++++++++++++++++++++++++++++
+ nbdime/_accel.py            | 325 +++++++++++++++++++++++++++
  nbdime/diffing/notebooks.py |  16 ++
  nbdime/merging/notebooks.py |  11 +-
- nbdime/tests/test_accel.py  | 342 ++++++++++++++++++++++++++++++++++++
+ nbdime/tests/test_accel.py  | 424 ++++++++++++++++++++++++++++++++++++
  pyproject.toml              |   1 +
- 5 files changed, 664 insertions(+), 1 deletion(-)
+ 5 files changed, 776 insertions(+), 1 deletion(-)
  create mode 100644 nbdime/_accel.py
  create mode 100644 nbdime/tests/test_accel.py
 
 diff --git a/nbdime/_accel.py b/nbdime/_accel.py
 new file mode 100644
-index 0000000..db71977
+index 0000000..30277a5
 --- /dev/null
 +++ b/nbdime/_accel.py
-@@ -0,0 +1,295 @@
+@@ -0,0 +1,325 @@
 +# Copyright (c) Jupyter Development Team.
 +# Distributed under the terms of the Modified BSD License.
 +
@@ -245,6 +245,29 @@ index 0000000..db71977
 +    return False
 +
 +
++def _inline_conflict(decision, all_nodes):
++    """Whether a custom diff holds cells or outputs inlined with conflict markers.
++
++    The inline-cells and inline-outputs strategies build these lists from the input cells or
++    outputs plus new nbformat marker nodes, so every mapping in them is a ``NotebookNode`` when
++    the three inputs are notebook nodes. Other custom payloads keep the Python path.
++    """
++    path = decision.get("common_path") or ()
++    custom = decision.get("custom_diff")
++    return (
++        all_nodes
++        and decision.get("action") == "custom"
++        and bool(custom)
++        and len(path) > 0
++        and path[-1] in ("cells", "outputs")
++        and all(
++            entry["op"] == "removerange"
++            or (entry["op"] == "addrange" and all(isinstance(v, dict) for v in entry["valuelist"]))
++            for entry in custom
++        )
++    )
++
++
 +def _call(name, *args, **kwargs):
 +    try:
 +        return getattr(_engine, name)(*args, **kwargs)
@@ -305,13 +328,20 @@ index 0000000..db71977
 +        except AttributeError:
 +            return None
 +    result = _call("decide_notebook_merge", base, local, remote, merge_args, ignores=ignores)
-+    if result is None or any(_custom_diff_has_mappings(d.get("custom_diff")) for d in result):
++    if result is None:
++        return None
++    all_nodes = all(isinstance(doc, NotebookNode) for doc in (base, local, remote))
++    inline = [_inline_conflict(d, all_nodes) for d in result]
++    if any(
++        not inline_cells and _custom_diff_has_mappings(d.get("custom_diff"))
++        for d, inline_cells in zip(result, inline)
++    ):
 +        return None
 +
 +    from .merging.decisions import MergeDecision
 +
 +    decisions = []
-+    for data in result:
++    for data, inline_cells in zip(result, inline):
 +        decision = MergeDecision(data)
 +        decision.common_path = tuple(decision.common_path)
 +        local_nodes = isinstance(local, NotebookNode)
@@ -321,7 +351,7 @@ index 0000000..db71977
 +        if "similar_insert" in decision:
 +            decision.similar_insert = _diff_entries(decision.similar_insert, remote_nodes)
 +        if "custom_diff" in decision:
-+            decision.custom_diff = _diff_entries(decision.custom_diff, False)
++            decision.custom_diff = _diff_entries(decision.custom_diff, inline_cells)
 +        decisions.append(decision)
 +    return decisions
 diff --git a/nbdime/diffing/notebooks.py b/nbdime/diffing/notebooks.py
@@ -415,10 +445,10 @@ index e81072d..82d87f2 100644
  
 diff --git a/nbdime/tests/test_accel.py b/nbdime/tests/test_accel.py
 new file mode 100644
-index 0000000..42c8dee
+index 0000000..e63b6bd
 --- /dev/null
 +++ b/nbdime/tests/test_accel.py
-@@ -0,0 +1,342 @@
+@@ -0,0 +1,424 @@
 +# Copyright (c) Jupyter Development Team.
 +# Distributed under the terms of the Modified BSD License.
 +
@@ -683,6 +713,51 @@ index 0000000..42c8dee
 +    assert entry.diff[0].value == "new"
 +
 +
++
++def _inline_cells_merge(engine):
++    marker = {"cell_type": "markdown", "metadata": {}, "source": "<<<<<<< local"}
++    cell = {"cell_type": "code", "metadata": {"tags": []}, "source": "x", "outputs": [
++        {"output_type": "stream", "name": "stdout", "text": "1"},
++    ], "execution_count": None}
++
++    def merge(base, local, remote, args, *, ignores):
++        engine.calls.append(("merge", ignores, args))
++        return [{
++            "common_path": ["cells"],
++            "conflict": True,
++            "action": "custom",
++            "local_diff": [{"op": "addrange", "key": 0, "valuelist": [cell]}],
++            "remote_diff": [{"op": "addrange", "key": 0, "valuelist": [marker]}],
++            "custom_diff": [
++                {"op": "addrange", "key": 0, "valuelist": [marker, cell]},
++                {"op": "removerange", "key": 0, "length": 1},
++            ],
++        }]
++
++    engine.decide_notebook_merge = merge
++
++
++def test_inline_cell_conflicts_use_the_engine(engine):
++    _inline_cells_merge(engine)
++    nb = nbformat.v4.new_notebook(cells=[nbformat.v4.new_code_cell("x", id="x")])
++    _, decisions = merge_notebooks(nb, nb, nb)
++    assert engine.calls
++    (decision,) = decisions
++    assert decision.common_path == ("cells",)
++    marker, cell = decision.custom_diff[0].valuelist
++    assert isinstance(marker, nbformat.NotebookNode)
++    assert isinstance(cell.metadata, nbformat.NotebookNode)
++    assert isinstance(cell.outputs[0], nbformat.NotebookNode)
++    assert isinstance(decision.custom_diff[1], DiffEntry)
++
++
++def test_inline_cell_conflicts_on_dict_inputs_use_python(engine):
++    _inline_cells_merge(engine)
++    nb = {"cells": [], "metadata": {}, "nbformat": 4, "nbformat_minor": 5}
++    _, decisions = merge_notebooks(nb, nb, nb)
++    assert engine.calls
++    assert decisions == []
++
 +def test_display_output_order_follows_python_behavior(engine):
 +    def display_output():
 +        return nbformat.NotebookNode(
@@ -717,6 +792,7 @@ index 0000000..42c8dee
 +    ("source-conflict--1", "source-conflict--2", "source-conflict--3"),
 +    ("single_cell_nb", "single_cell_nb--changed_source", "single_cell_nb--changed_output"),
 +    ("mixed-conflicts--1", "mixed-conflicts--2", "mixed-conflicts--3"),
++    ("output-conflict--1", "output-conflict--2", "output-conflict--3"),
 +]
 +
 +
@@ -740,6 +816,19 @@ index 0000000..42c8dee
 +    notebooks.reset_notebook_differ()
 +
 +
++def _without_marker_ids(value):
++    """Drop the ids of conflict marker cells, which Python makes random."""
++    if isinstance(value, dict):
++        if value.get("cell_type") == "markdown" and "color:red" in value.get("source", ""):
++            value.pop("id", None)
++        for item in value.values():
++            _without_marker_ids(item)
++    elif isinstance(value, (list, tuple)):
++        for item in value:
++            _without_marker_ids(item)
++    return value
++
++
 +def _python_only(monkeypatch, func, *args):
 +    with monkeypatch.context() as m:
 +        m.setenv("NBDIME_ACCEL", "0")
@@ -760,7 +849,30 @@ index 0000000..42c8dee
 +        base, local, remote = (_read(name) for name in names)
 +        expected = _python_only(monkeypatch, merge_notebooks, base, local, remote)
 +        monkeypatch.setenv("NBDIME_ACCEL", "force")
-+        assert merge_notebooks(base, local, remote) == expected
++        result = merge_notebooks(base, local, remote)
++        assert _without_marker_ids(result) == _without_marker_ids(expected)
++
++    def test_inline_cell_conflict_stays_on_the_engine(self, real_engine, monkeypatch):
++        from nbdime.merging import notebooks as merging
++
++        base = nbformat.v4.new_notebook(cells=[nbformat.v4.new_code_cell("a", id="a")])
++        local = nbformat.v4.new_notebook(cells=[
++            nbformat.v4.new_code_cell("a", id="a"), nbformat.v4.new_code_cell("left", id="l"),
++        ])
++        remote = nbformat.v4.new_notebook(cells=[
++            nbformat.v4.new_code_cell("a", id="a"), nbformat.v4.new_markdown_cell("right", id="r"),
++        ])
++        expected_nb, expected = _python_only(monkeypatch, merge_notebooks, base, local, remote)
++        monkeypatch.setenv("NBDIME_ACCEL", "force")
++        monkeypatch.setattr(merging, "notebook_merge_strategies", None)
++        merged_nb, decisions = merge_notebooks(base, local, remote)
++
++        assert _without_marker_ids(merged_nb.cells) == _without_marker_ids(expected_nb.cells)
++        (decision,) = decisions
++        cells = decision.custom_diff[0].valuelist
++        assert all(isinstance(cell, nbformat.NotebookNode) for cell in cells)
++        assert all(isinstance(cell.metadata, nbformat.NotebookNode) for cell in cells)
++        assert _without_marker_ids(cells) == _without_marker_ids(expected[0].custom_diff[0].valuelist)
 diff --git a/pyproject.toml b/pyproject.toml
 index f8ed0cd..ae5a334 100644
 --- a/pyproject.toml

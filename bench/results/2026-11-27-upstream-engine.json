@@ -1,80 +1,79 @@
 {
  "date": "2026-11-27",
- "machine": "4-vCPU Intel Xeon @ 2.30GHz cloud VM, Linux, CPython 3.13",
- "nbdime": "4.0.4 + docs/upstream/optional-rust-engine.patch",
+ "machine": "4-vCPU Intel Xeon @ 2.30GHz cloud VM, Linux, CPython 3.13.18",
+ "nbdime": "4.0.4 + docs/upstream/optional-rust-engine.patch (inline conflict fix)",
  "command": "python bench/upstream_engine.py --repeat 3",
  "in_process_median_seconds": [
   {
    "cells": 100,
    "ids": true,
    "python": {
-    "diff": 0.006288863999998284,
-    "merge": 0.01441335100000174
+    "diff": 0.006521425000300951,
+    "merge": 0.0157313790000444
    },
    "engine": {
-    "diff": 0.0015940459999796985,
-    "merge": 0.005217568999995592
+    "diff": 0.001439570000002277,
+    "merge": 0.005189958999835653
    }
   },
   {
    "cells": 400,
    "ids": true,
    "python": {
-    "diff": 0.046525325000004614,
-    "merge": 0.10602596399999697
+    "diff": 0.044418717000098695,
+    "merge": 0.10362067599999136
    },
    "engine": {
-    "diff": 0.005883159000006799,
-    "merge": 0.02068429799999194
+    "diff": 0.005824715000017022,
+    "merge": 0.020406333000209997
    }
   },
   {
    "cells": 1600,
    "ids": true,
    "python": {
-    "diff": 0.5776213369999823,
-    "merge": 1.2337767820000067
+    "diff": 0.6612997420002102,
+    "merge": 1.2143258129999595
    },
    "engine": {
-    "diff": 0.028346868999989283,
-    "merge": 0.10746634899999208
+    "diff": 0.02925185499998406,
+    "merge": 0.10694751099981659
    }
   },
   {
    "cells": 400,
    "ids": false,
    "python": {
-    "diff": 1.8965852450000114,
-    "merge": 3.756088798999997
+    "diff": 1.8222536319999563,
+    "merge": 3.4904271619998326
    },
    "engine": {
-    "diff": 0.009558182999967357,
-    "merge": 0.028349936999973124
+    "diff": 0.009563261000039347,
+    "merge": 0.027844403000017337
    }
   },
   {
    "cells": 1600,
    "ids": false,
    "python": {
-    "diff": 29.23170128999999,
-    "merge": 58.49583792799996
+    "diff": 30.410809598000014,
+    "merge": 60.785828451999805
    },
    "engine": {
-    "diff": 0.09202650399993217,
-    "merge": 59.56586756699994
+    "diff": 0.11428911499979222,
+    "merge": 0.2414255610001419
    }
   }
  ],
  "cli_nbdiff_1600_cells_seconds_median_of_3": {
   "ids": {
-   "NBDIME_ACCEL=0": 1.727,
-   "NBDIME_ACCEL=1": 1.199
+   "NBDIME_ACCEL=0": 1.865,
+   "NBDIME_ACCEL=1": 1.087
   },
   "no_ids": {
-   "NBDIME_ACCEL=0": 30.508,
-   "NBDIME_ACCEL=1": 1.256,
-   "nbdime-rs nbdiff": 0.202
+   "NBDIME_ACCEL=0": 32.117,
+   "NBDIME_ACCEL=1": 1.225,
+   "nbdime-rs nbdiff (earlier run)": 0.202
   }
- },
- "notes": "1600 cells without ids: the merge falls back to Python because one conflict decision has a custom_diff with mapping values, which the adapter declines to convert."
+ }
 }

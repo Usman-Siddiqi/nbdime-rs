@@ -33,6 +33,9 @@ in `docs/findings.md`.
    disclose AI authorship and lead with testing. Order: publish nbdime-rs to PyPI with Linux,
    macOS and Windows wheels, then post `proposal.md` as an issue, then the PR only if invited.
    The proposal also offers a minimal plugin hook as a smaller alternative.
+   Merges with inline cell or output conflicts no longer fall back to Python (marker-cell
+   payloads are converted to `NotebookNode`); gate 129/129 after the change. Benchmark:
+   `bench/upstream_engine.py`, results in `bench/results/2026-11-27-upstream-engine.json`.
 
 ## Workflow
 

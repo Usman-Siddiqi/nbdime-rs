@@ -3,9 +3,6 @@ Notes for Usman, not part of the issue. Delete this block before posting.
 - Post this on github.com/jupyter/nbdime/issues only after nbdime-rs is on PyPI.
 - Search their issues for "slow" / "performance" first and link anything relevant.
 - Change any wording that doesn't sound like you. If they ask about the code, answer yourself.
-- The 1,600-cell no-ids merge falls back to Python (one conflict has a custom_diff with dict
-  values that _accel.py declines to convert). Better to fix that before posting and rerun the
-  benchmark; otherwise keep the footnote, which says so honestly.
 -->
 
 # Would you want an optional faster engine for notebook diffs?
@@ -20,18 +17,14 @@ cell ids. Here's what I measured, nbdime 4.0.4 on its own vs. with the Rust engi
 
 | Notebook | Diff: Python | Diff: engine | Merge: Python | Merge: engine |
 |---|---:|---:|---:|---:|
-| 100 cells | 6.3 ms | 1.6 ms | 14 ms | 5.2 ms |
-| 400 cells | 47 ms | 5.9 ms | 106 ms | 21 ms |
-| 1,600 cells | 578 ms | 28 ms | 1.23 s | 107 ms |
-| 400 cells, no ids | 1.90 s | 9.6 ms | 3.76 s | 28 ms |
-| 1,600 cells, no ids | 29.2 s | 92 ms | 58.5 s | 59.6 s * |
+| 100 cells | 6.5 ms | 1.4 ms | 16 ms | 5.2 ms |
+| 400 cells | 44 ms | 5.8 ms | 104 ms | 20 ms |
+| 1,600 cells | 661 ms | 29 ms | 1.21 s | 107 ms |
+| 400 cells, no ids | 1.82 s | 9.6 ms | 3.49 s | 28 ms |
+| 1,600 cells, no ids | 30.4 s | 114 ms | 60.8 s | 241 ms |
 
-And the full `nbdiff` command on the 1,600-cell notebook without ids goes from **30.5 s to
-1.3 s** (most of what's left is Python startup and reading the files).
-
-\* That one merge still falls back to Python right now, because one of the conflicts has a type
-of payload the glue code doesn't convert yet. I'm working on it, but I'd rather show it than
-hide it.
+And the full `nbdiff` command on the 1,600-cell notebook without ids goes from **32 s to
+1.2 s** (most of what's left is Python startup and reading the files).
 
 These are medians of 3 runs on a 4-core Intel Xeon cloud VM with CPython 3.13, using
 generated notebooks with about 5% of cells changed. To rerun it, apply the patch to a 4.0.4

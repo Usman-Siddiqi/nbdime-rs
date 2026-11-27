@@ -26,6 +26,10 @@ UPSTREAM_FILES = [
 NOT_APPLICABLE = {
     "nbdime/tests/test_git_diffdriver.py::test_git_web_diff_driver":
         "web UI (nbdiff-web) is out of scope",
+    # Both drive `git difftool`/`git mergetool` into nbdime's web tools and poll their HTTP
+    # server; they pass locally only when upstream's own `nbdime` answers on PATH.
+    "nbdime/tests/test_cli_apps.py::test_git_difftool": "web UI (nbdiff-web) is out of scope",
+    "nbdime/tests/test_cli_apps.py::test_git_mergetool": "web UI (nbmerge-web) is out of scope",
 }
 
 RESULT = re.compile(r"^(PASSED|FAILED|ERROR|SKIPPED|XFAIL|XPASS) (\S+)", re.M)

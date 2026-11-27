@@ -27,6 +27,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
@@ -84,8 +85,17 @@ def sandbox(tmp_path_factory):
     return root, env
 
 
+def _rmtree(path):
+    """`shutil.rmtree` that also removes read-only files, such as git's objects on Windows."""
+    def retry(func, p, _):
+        os.chmod(p, stat.S_IWRITE)
+        func(p)
+    shutil.rmtree(path, onerror=retry)
+
+
 def _run(binary, args, cwd, env, stdin):
-    p = subprocess.run([str(binary)] + args, cwd=cwd, env=env, input=stdin, capture_output=True,
+    cmd = list(binary) if isinstance(binary, (list, tuple)) else [str(binary)]
+    p = subprocess.run(cmd + args, cwd=cwd, env=env, input=stdin, capture_output=True,
                        timeout=300)
     return p.returncode, p.stdout, p.stderr
 
@@ -119,7 +129,7 @@ def run_pair(case, root, env):
         if "setup" in case:
             d = _setup_dir(case, which, root)
             if d.exists():
-                shutil.rmtree(d)
+                _rmtree(d)
             d.mkdir()
             case["setup"](d)
             cwd = d / case.get("subdir", "")
@@ -426,7 +436,7 @@ def test_cli_nbdiff_git_refs(sandbox):
     root, env = sandbox
     repo = root / "repo"
     if repo.exists():
-        shutil.rmtree(repo)
+        _rmtree(repo)
     (repo / "sub").mkdir(parents=True)
     genv = dict(env, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@example.com", GIT_COMMITTER_NAME="t",
                 GIT_COMMITTER_EMAIL="t@example.com", GIT_AUTHOR_DATE="2020-01-01T00:00:00Z",
@@ -489,7 +499,7 @@ def test_cli_review_regressions(sandbox):
     root, env = sandbox
     base = root / "regr"
     if base.exists():
-        shutil.rmtree(base)
+        _rmtree(base)
     rng = rng_for("cli-regressions")
     nbs = [random_notebook(rng, n_cells=3)]
     for _ in range(3):
@@ -647,7 +657,7 @@ def test_cli_delta_regressions(sandbox):
     root, env = sandbox
     base = root / "delta"
     if base.exists():
-        shutil.rmtree(base)
+        _rmtree(base)
     rng = rng_for("cli-delta")
     # With ids: the appended cell has one, so the notebook must be 4.5 for every seed.
     nb = random_notebook(rng, n_cells=2, ids=True)

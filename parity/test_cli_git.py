@@ -188,7 +188,7 @@ def test_cli_git_diff_driver_filter_paths_and_diagnostics(sandbox):
     # Windows has no byte file names to decode.
     if os.name != "nt":
         cases.insert(0, case(os.fsdecode(b"a\xff.ipynb")))
-    check_cli(cases, root, env, min_cases=3)
+    check_cli(cases, root, env, min_cases=len(cases))
 
 
 def test_cli_git_merge_driver(sandbox):
@@ -267,6 +267,9 @@ def test_cli_nbpatch(sandbox):
     refpatch.write_text("#!%s\nimport sys\nfrom nbdime.nbpatchapp import main\nsys.exit(main())\n"
                         % (REF_BIN / "python"))
     refpatch.chmod(0o755)
+    if os.name == "nt":
+        # No shebangs on Windows: run the same script through the interpreter.
+        refpatch = [str(REF_BIN / "python.exe"), str(refpatch)]
     cases = []
     for i in range(len(texts) - 1):
         a, b = d / ("%d-a.ipynb" % i), d / ("%d-b.ipynb" % i)

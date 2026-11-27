@@ -112,7 +112,10 @@ mod tests {
         let (code, out) = run_app(run, "nbpatch", &[&a, &empty, "-o", &target]);
         assert_eq!((code, out.as_str()), (0, ""));
         let written = fs::read_to_string(&target).unwrap();
-        assert!(written.contains("\"x = 1\"") && written.ends_with("}\n"));
+        assert!(
+            written.contains("\"x = 1\"")
+                && written.ends_with(&*nbdime_core::textmode::native("}\n"))
+        );
         let (code, _) = run_app(run, "nbpatch", &[&a, &empty, &format!("--output={target}")]);
         assert_eq!(code, 0);
     }

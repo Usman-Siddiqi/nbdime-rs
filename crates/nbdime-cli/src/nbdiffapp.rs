@@ -197,7 +197,7 @@ mod tests {
         let (code, out) = run_app(run, "nbdiff", &[&a, &b, "--out", &target]);
         assert_eq!((code, out.as_str()), (0, ""));
         let written = fs::read_to_string(&target).unwrap();
-        assert!(written.starts_with("[\n  {\n    \"op\": \"patch\""));
+        assert!(written.starts_with(&*textmode::native("[\n  {\n    \"op\": \"patch\"")));
         assert!(!written.ends_with('\n'));
     }
 

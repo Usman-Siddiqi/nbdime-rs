@@ -384,7 +384,10 @@ mod tests {
         );
         assert_eq!(code, 0);
         let written = fs::read_to_string(&target).unwrap();
-        assert!(written.starts_with("[\n  {") && written.ends_with("]\n"));
+        assert!(
+            written.starts_with(&*textmode::native("[\n  {"))
+                && written.ends_with(&*textmode::native("]\n"))
+        );
     }
 
     #[test]

@@ -67,5 +67,8 @@ jobs:
           import xml.etree.ElementTree as ET
           for case in ET.parse("parity-results.xml").iter("testcase"):
               for bad in case.findall("failure") + case.findall("error"):
-                  first = (bad.get("message") or "").splitlines()[:1]
-                  print("%s::%s  %s" % (case.get("classname"), case.get("name"), first[0][:160] if first else ""))
+                  lines = (bad.get("message") or "").splitlines()
+                  print("%s::%s  %s" % (case.get("classname"), case.get("name"), lines[0][:160] if lines else ""))
+                  # The first differing line of each reported case.
+                  for line in [l for l in lines if " differs (line " in l][:4]:
+                      print("    " + line.strip()[:400])

@@ -1,0 +1,80 @@
+{
+ "date": "2026-11-27",
+ "machine": "4-vCPU Intel Xeon @ 2.30GHz cloud VM, Linux, CPython 3.13",
+ "nbdime": "4.0.4 + docs/upstream/optional-rust-engine.patch",
+ "command": "python bench/upstream_engine.py --repeat 3",
+ "in_process_median_seconds": [
+  {
+   "cells": 100,
+   "ids": true,
+   "python": {
+    "diff": 0.006288863999998284,
+    "merge": 0.01441335100000174
+   },
+   "engine": {
+    "diff": 0.0015940459999796985,
+    "merge": 0.005217568999995592
+   }
+  },
+  {
+   "cells": 400,
+   "ids": true,
+   "python": {
+    "diff": 0.046525325000004614,
+    "merge": 0.10602596399999697
+   },
+   "engine": {
+    "diff": 0.005883159000006799,
+    "merge": 0.02068429799999194
+   }
+  },
+  {
+   "cells": 1600,
+   "ids": true,
+   "python": {
+    "diff": 0.5776213369999823,
+    "merge": 1.2337767820000067
+   },
+   "engine": {
+    "diff": 0.028346868999989283,
+    "merge": 0.10746634899999208
+   }
+  },
+  {
+   "cells": 400,
+   "ids": false,
+   "python": {
+    "diff": 1.8965852450000114,
+    "merge": 3.756088798999997
+   },
+   "engine": {
+    "diff": 0.009558182999967357,
+    "merge": 0.028349936999973124
+   }
+  },
+  {
+   "cells": 1600,
+   "ids": false,
+   "python": {
+    "diff": 29.23170128999999,
+    "merge": 58.49583792799996
+   },
+   "engine": {
+    "diff": 0.09202650399993217,
+    "merge": 59.56586756699994
+   }
+  }
+ ],
+ "cli_nbdiff_1600_cells_seconds_median_of_3": {
+  "ids": {
+   "NBDIME_ACCEL=0": 1.727,
+   "NBDIME_ACCEL=1": 1.199
+  },
+  "no_ids": {
+   "NBDIME_ACCEL=0": 30.508,
+   "NBDIME_ACCEL=1": 1.256,
+   "nbdime-rs nbdiff": 0.202
+  }
+ },
+ "notes": "1600 cells without ids: the merge falls back to Python because one conflict decision has a custom_diff with mapping values, which the adapter declines to convert."
+}

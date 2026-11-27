@@ -39,13 +39,17 @@ ask me about anything.
   random and weird notebook pairs), and also ran at 4x size with three seeds. No differences.
 - Wheels install and import on clean CPython 3.9 and 3.13 on Linux, macOS and Windows.
 
-**Speed** (median of 7 in-process `diff_notebooks` calls, CPython 3.13, ~5% of cells edited)
+**Speed** (median of 3 in-process calls, CPython 3.13, 4-core Xeon VM, ~5% of cells changed;
+rerun with `bench/upstream_engine.py` from nbdime-rs)
 
-| Code cells | Python | Engine | Speedup |
-|---:|---:|---:|---:|
-| 100 | 2.8 ms | 0.7 ms | 4x |
-| 800 | 135 ms | 5.2 ms | 26x |
-| 1600 | 584 ms | 10.4 ms | 56x |
+| Notebook | Diff: Python | Diff: engine | Merge: Python | Merge: engine |
+|---|---:|---:|---:|---:|
+| 100 cells | 6.3 ms | 1.6 ms | 14 ms | 5.2 ms |
+| 400 cells | 47 ms | 5.9 ms | 106 ms | 21 ms |
+| 1,600 cells | 578 ms | 28 ms | 1.23 s | 107 ms |
+| 400 cells, no ids | 1.90 s | 9.6 ms | 3.76 s | 28 ms |
+| 1,600 cells, no ids | 29.2 s | 92 ms | 58.5 s | 59.6 s (falls back to Python) |
 
-It gets better as notebooks get bigger, because the Python cell matching grows faster than the
-number of cells.
+Full `nbdiff` on the 1,600-cell notebook without ids: 30.5 s with the engine off, 1.3 s with it
+on. It gets better as notebooks get bigger, because the Python cell matching grows faster than
+the number of cells.

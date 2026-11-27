@@ -254,6 +254,7 @@ fn next_child<'py>(frame: &mut Contents<'py>) -> PyResult<Option<Bound<'py, PyAn
 }
 
 fn string(s: &Bound<'_, PyString>) -> PyResult<String> {
+    // `to_cow` fails for lone surrogates, which a Rust `String` cannot hold (F-005).
     s.to_cow()
         .map(std::borrow::Cow::into_owned)
         .map_err(|error| {

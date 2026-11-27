@@ -21,7 +21,17 @@ jobs:
       - run: cargo test
 
   parity:
-    runs-on: ubuntu-latest
+    name: parity ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-15, windows-latest]
+    # Exact-output parity is established on Linux; macOS and Windows report but do not block yet.
+    continue-on-error: ${{ matrix.os != 'ubuntu-latest' }}
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -38,6 +48,10 @@ jobs:
         env:
           NBDIME_UPSTREAM: ${{ runner.temp }}/nbdime-upstream
         run: |
+          if [ "$RUNNER_OS" = Windows ]; then
+            # diff, diff3 and the POSIX tools upstream's renderers and tests call.
+            export PATH="$PATH:/c/Program Files/Git/usr/bin"
+          fi
           export NBDIME_REF_BIN="$(dirname "$(command -v nbdiff)")"
           export NBDIME_REF_PYTHON="$(command -v python)"
           git config --global user.name ci && git config --global user.email ci@example.com

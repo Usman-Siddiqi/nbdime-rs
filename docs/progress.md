@@ -220,3 +220,14 @@ done
   is the JS artifacts check, which needs the web build.
 - Next: the owner decides on upstream actions (proposal issue, fork, PR). Nothing has been done
   upstream.
+
+## 2026-11-27: parity on macOS and Windows
+- CI parity now runs on Linux, macOS and Windows, all blocking, 129 of 129 suites each.
+- macOS needed only harness fixes (two timing flakes; F-051).
+- Windows fixes in the port: Python text-mode line endings for files and streams, stdout LF and
+  stderr CRLF after `setup_std_streams()`, colorama's ANSI stripping, `nul` as the null file and
+  its epoch timestamp, the Windows Jupyter config locations, and `.exe` dropped from the
+  program name (it hid the config entry point). Details in F-051.
+- The CI summary step now prints each failing case's command, exit code and first differing
+  line, so a failure can be diagnosed from the job log alone.
+- A Windows parity run takes about 37 minutes, against 15 on Linux.

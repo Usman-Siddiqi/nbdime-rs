@@ -596,38 +596,44 @@ doubled final newline, and a common last line that is repeated after the conflic
   nbdime replaces nbdime's commands of the same names. An upstream `accel` extra that depends on
   this package would therefore change nbdime's commands. That needs a decision before the
   upstream PR: an engine-only distribution, or no commands in the extra's dependency.
-- **Windows**: it now builds. `~` expands as `ntpath` does (`USERPROFILE`, then
-  `HOMEDRIVE`+`HOMEPATH`). `git-nbdifftool`'s `os.execvp` becomes "run git and exit with its
-  status". The terminal width comes from `COLUMNS` or defaults to 80. Parity is verified on Linux
-  only. On Windows, upstream's text output uses CRLF line ends and nbdime-rs writes LF. Treat
-  Windows as supported but not parity-tested.
-- **Also on Windows**: canonical paths drop the `\\?\` prefix, git clean filters run through
-  `cmd /c` (`shell=True`), and an integer file argument from a config file (`os.stat(fd)`) counts
-  as missing. The Jupyter config search path still uses the POSIX locations (`:` separator,
-  `/etc/jupyter`), not `%PROGRAMDATA%` and `;`. The unit tests that encode POSIX paths, `HOME`
-  or `/bin/sh` filters run on Unix only. The CLI test suite in `tests/cli.rs` is Unix-only for
-  the same reason.
+- **Windows**: `~` expands as `ntpath` does (`USERPROFILE`, then `HOMEDRIVE`+`HOMEPATH`).
+  `git-nbdifftool`'s `os.execvp` becomes "run git and exit with its status". The terminal width
+  comes from `COLUMNS` or defaults to 80. Canonical paths drop the `\\?\` prefix, git clean
+  filters run through `cmd /c` (`shell=True`), and an integer file argument from a config file
+  (`os.stat(fd)`) counts as missing. The Jupyter config search path follows `jupyter_core` on
+  Windows: `;` separates `JUPYTER_CONFIG_PATH`, and there is no system directory unless
+  `JUPYTER_USE_PROGRAMDATA` selects `%PROGRAMDATA%\jupyter`. The unit tests that encode POSIX
+  paths, `HOME` or `/bin/sh` filters run on Unix only, as does `tests/cli.rs`.
 - **Parity on macOS and Windows** (2026-11-27): CI runs the full parity suite against upstream
-  on `macos-15` and `windows-latest` as well as Linux.
-  - macOS passes 129 of 129 and is now blocking. The earlier failures were two timing flakes in
-    the harness, not in the port. Upstream prints the mtime of `/dev/null` in diff headers, and
-    macOS updates that mtime on every write to it, so the harness masks it. Git skips
-    re-reading a file only when its mtime is older than the index ("racily clean" otherwise),
-    so the git fixtures now backdate the files they commit, each revision to its own second.
-  - Windows text output now matches Python's text mode: every `"\n"` written to stdout, stderr,
-    `--out` files, notebooks, `.gitattributes` and the external renderers' temporary files
-    becomes `"\r\n"`, and an existing `"\r\n"` becomes `"\r\r\n"` (`nbdime_core::textmode`). The
-    temporary files are what keeps a `"\r\n"` inside a cell source through `git merge-file`
-    on Windows, as upstream does. The null file is `nul` there, as `os.devnull` is.
+  on `macos-15` and `windows-latest` as well as Linux, all three blocking.
+  - macOS: the earlier failures were two timing flakes in the harness, not in the port.
+    Upstream prints the mtime of `/dev/null` in diff headers, and macOS updates that mtime on
+    every write to it, so the harness masks it. Git skips re-reading a file only when its mtime
+    is older than the index ("racily clean" otherwise), so the git fixtures now backdate the
+    files they commit, each revision to its own second.
+  - Windows files: text-mode writes (`--out` files, notebooks, `.gitattributes`, the external
+    renderers' temporary files) turn every `"\n"` into `"\r\n"`, and an existing `"\r\n"`
+    into `"\r\r\n"` (`nbdime_core::textmode`). The temporary files are what keeps a `"\r\n"`
+    inside a cell source through `git merge-file` on Windows, as upstream does. The null file
+    is `nul`, as `os.devnull` is, and its timestamp in diff headers is the epoch, because
+    `os.stat("nul")` succeeds with zero times.
+  - Windows standard streams (`nbdime-cli/src/stdstreams.rs`): Python's are text streams, so
+    output is CRLF. `setup_std_streams()`, which `nbdiff`, `nbshow`, `nbpatch`, `nbmerge` and
+    `git-nbdiffdriver` call first (also when reached through `nbdime show`/`diff`/`merge` and
+    `config-git`), rewraps only a stream whose error handler is `strict` or
+    `surrogateescape`. That is stdout unless `PYTHONIOENCODING` is set, which then writes LF;
+    stderr's handler is `backslashreplace`, so it stays CRLF. colorama then strips ANSI
+    sequences from both streams when they are not a terminal; on a console nbdime-rs turns on
+    virtual terminal processing instead of translating them.
   - Upstream on Windows writes stdio in the ANSI code page unless Python's UTF-8 mode is on, and
-    crashes (`UnicodeEncodeError`) on most non-Latin text. nbdime-rs always writes UTF-8. The
-    harness compares against upstream in UTF-8 mode (`PYTHONUTF8=1`). Deliberate deviation.
-  - Windows is still non-blocking: 18 of 129 suites differ, all byte comparisons of CLI output
-    (nbdiff, nbmerge, nbshow, git drivers) plus one upstream test
-    (`test_nbdiff_app_config_ignores`, a config file in the working directory that is not
-    picked up). The remaining causes are not diagnosed yet. Likely suspects are path spelling
-    in headers (`\` vs `/`), the Jupyter config path (POSIX locations, see above), and how git
-    for Windows passes paths to the drivers.
+    escapes characters that page cannot encode (`backslashreplace`). nbdime-rs always writes
+    UTF-8. The harness compares against upstream in UTF-8 mode (`PYTHONUTF8=1`). Deliberate
+    deviation.
+  - The program name drops a trailing `.exe` (or `-script.pyw`), as pip's console-script
+    wrapper does to `sys.argv[0]`; the name selects the configuration entry point.
+  - Harness side: Windows temporary paths are masked like POSIX ones, the `\xff` file name
+    cases run on Linux only (Windows and macOS file names must be Unicode), and read-only git
+    objects are made writable before temporary directories are removed.
 
 ## Open questions
 

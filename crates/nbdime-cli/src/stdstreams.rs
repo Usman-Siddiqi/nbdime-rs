@@ -1,10 +1,13 @@
 //! What Python's standard streams do to nbdime's output on Windows.
 //!
-//! Before `setup_std_streams()`, `sys.stdout` and `sys.stderr` are text streams that write every
-//! `"\n"` as `"\r\n"`. `setup_std_streams()` (called first thing by `nbdiff`, `nbshow`,
-//! `nbpatch`, `nbmerge` and `git-nbdiffdriver`) replaces them with encoders over the raw buffers,
-//! so `"\n"` stays `"\n"`, and wraps them in colorama, which strips ANSI escape sequences from a
-//! stream that is not a terminal (and renders them on one). Elsewhere nothing changes.
+//! Python's `sys.stdout` and `sys.stderr` are text streams that write every `"\n"` as `"\r\n"`.
+//! `setup_std_streams()` (called first thing by `nbdiff`, `nbshow`, `nbpatch`, `nbmerge` and
+//! `git-nbdiffdriver`, however they are reached) replaces a stream whose error handler is
+//! `strict` or `surrogateescape` with an encoder over its raw buffer, so `"\n"` stays `"\n"`.
+//! That is stdout, unless `PYTHONIOENCODING` is set; stderr's handler is `backslashreplace`, so
+//! it keeps its line endings. Both streams are then wrapped in colorama, which strips ANSI
+//! escape sequences from a stream that is not a terminal (and renders them on one). Elsewhere
+//! nothing changes.
 
 use std::borrow::Cow;
 #[cfg(windows)]
@@ -13,12 +16,18 @@ use std::io::{self, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 static SET_UP: AtomicBool = AtomicBool::new(false);
+static RAW_STDOUT: AtomicBool = AtomicBool::new(false);
 
 /// `nbdime.utils.setup_std_streams()`.
 pub fn setup_std_streams() {
-    SET_UP.store(true, Ordering::Relaxed);
-    #[cfg(windows)]
-    enable_ansi_on_consoles();
+    if !SET_UP.swap(true, Ordering::Relaxed) {
+        RAW_STDOUT.store(
+            std::env::var_os("PYTHONIOENCODING").is_none_or(|v| v.is_empty()),
+            Ordering::Relaxed,
+        );
+        #[cfg(windows)]
+        enable_ansi_on_consoles();
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -28,21 +37,32 @@ enum Stream {
 }
 
 /// The bytes Python would emit for `text` written to the stream.
-#[cfg_attr(not(windows), allow(unused_variables))]
+#[cfg(windows)]
 fn render(text: &[u8], stream: Stream) -> Cow<'_, [u8]> {
-    #[cfg(windows)]
-    {
-        if !SET_UP.load(Ordering::Relaxed) {
-            return crlf(text);
-        }
-        let terminal = match stream {
-            Stream::Stdout => io::stdout().is_terminal(),
-            Stream::Stderr => io::stderr().is_terminal(),
-        };
-        if !terminal {
-            return strip_ansi(text);
-        }
+    if !SET_UP.load(Ordering::Relaxed) {
+        return crlf(text);
     }
+    let (terminal, raw) = match stream {
+        Stream::Stdout => (
+            io::stdout().is_terminal(),
+            RAW_STDOUT.load(Ordering::Relaxed),
+        ),
+        Stream::Stderr => (io::stderr().is_terminal(), false),
+    };
+    let text = if terminal {
+        Cow::Borrowed(text)
+    } else {
+        strip_ansi(text)
+    };
+    match (raw, text) {
+        (true, text) => text,
+        (false, Cow::Borrowed(text)) => crlf(text),
+        (false, Cow::Owned(text)) => Cow::Owned(crlf(&text).into_owned()),
+    }
+}
+
+#[cfg(not(windows))]
+fn render(text: &[u8], _stream: Stream) -> Cow<'_, [u8]> {
     Cow::Borrowed(text)
 }
 

@@ -40,12 +40,12 @@ pub fn build_parser(prog: &str) -> Parser {
 /// Runs `nbdiff` with the arguments `args` (without the program name) and returns the exit
 /// status. Text for stdout is written to `out`.
 pub fn main(prog: &str, args: &[String], out: &mut dyn Write) -> Result<i32> {
-    crate::stdstreams::setup_std_streams();
     run(&Context::process(), prog, args, out)
 }
 
 /// [`main`] in the process `ctx` describes.
 pub fn run(ctx: &Context, prog: &str, args: &[String], out: &mut dyn Write) -> Result<i32> {
+    crate::stdstreams::setup_std_streams();
     let mut diff_config = NotebookDiffConfig::new();
     let mut parser = build_parser(prog);
     apply_config(ctx, &mut parser, &mut diff_config)?;

@@ -190,13 +190,12 @@ decision, in [docs/findings.md](docs/findings.md). The ones a user might notice:
 
 ## Platform status
 
-- **Linux:** exact-output parity against upstream is tested in CI (x86-64; arm64 wheels are
-  smoke-tested).
-- **macOS and Windows:** the code builds, the unit tests run, and every wheel is smoke-tested in
-  CI. Exact-output parity is not tested there. On Windows, upstream writes CRLF line ends in
-  text output and nbdime-rs writes LF, and the Jupyter config search path still uses the POSIX
-  locations (F-051 in [docs/findings.md](docs/findings.md)). Treat them as supported but not
-  parity-tested.
+- **Linux, macOS and Windows:** exact-output parity against upstream is tested in CI on all
+  three (x86-64 Linux, Apple silicon macOS, x86-64 Windows), and every wheel is smoke-tested,
+  including arm64 Linux. On Windows, line endings, colours and the config search path follow
+  Python's behaviour there. The one deliberate difference is that nbdime-rs always writes UTF-8,
+  where upstream uses the console code page unless Python's UTF-8 mode is on (F-051 in
+  [docs/findings.md](docs/findings.md)).
 
 ## What is still to come
 

@@ -21,6 +21,9 @@ GIT_ENV = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.com", "GIT_COM
            "GIT_COMMITTER_DATE": "2020-01-01T00:00:00Z"}
 MASK = [
     (rb"/tmp/[^\s'\"]*?/(?:[0-9A-Za-z]+_)?(?=[^/\s]*\.ipynb)", b"{tmp}/"),
+    # git for Windows: %TEMP% (in short form) and a forward slash before git's own directory.
+    (rb"[A-Za-z]:\\[^\s'\"]*?[/\\](?:git-blob-[0-9A-Za-z]+[/\\])?(?:[0-9A-Za-z]+_)?(?=[^/\\\s]*\.ipynb)",
+     b"{tmp}/"),
     (rb"(?m)(?<=Merge result written to )\.merge_file_[0-9A-Za-z]{6}$", b"{merge-result-tmp}"),
     (rb"(?m)^(\[W warnings:110\] )/[^\n]*/site-packages/(?=nbformat/validator\.py:434: DuplicateCellId: )",
      rb"\1"),

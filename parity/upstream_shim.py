@@ -68,15 +68,19 @@ def _replay_stderr(text):
 
 
 def run_binary(cmd, argv, cwd=None):
-    exe = OUR_BIN / cmd[0]
+    exe = OUR_BIN / (cmd[0] + (".exe" if os.name == "nt" else ""))
     if not exe.exists():
         raise RuntimeError("nbdime-rs binary not built: %s" % exe)
     sys.stdout.flush()
     sys.stderr.flush()
     p = subprocess.run([str(exe)] + cmd[1:] + list(argv), stdin=subprocess.DEVNULL,
                        capture_output=True, cwd=cwd)
-    sys.stdout.write(p.stdout.decode("utf-8", "surrogateescape"))
+    out = p.stdout.decode("utf-8", "surrogateescape")
     err = p.stderr.decode("utf-8", "surrogateescape")
+    if os.name == "nt":
+        # Undo the text-mode newline translation; the app would write to sys.stdout in-process.
+        out, err = out.replace("\r\n", "\n"), err.replace("\r\n", "\n")
+    sys.stdout.write(out)
     _replay_stderr(err)
     # argparse leaves through SystemExit (help, usage errors) where the app would return a code.
     if any(a in ("-h", "--help") for a in argv) or (p.returncode == 2 and "usage:" in err):

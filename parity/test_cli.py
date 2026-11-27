@@ -222,7 +222,8 @@ def check_cli(cases, root, env, min_cases):
                 _first_difference(ref[1], ours[1]),
                 ref[1].decode("utf-8", "replace")[:3000], ours[1].decode("utf-8", "replace")[:3000]))
         if ref[3] != ours[3]:
-            problems.append("output file differs: upstream %s, ours %s" % (
+            problems.append("output file differs (%s): upstream %s, ours %s" % (
+                _first_difference(ref[3] or b"", ours[3] or b""),
                 None if ref[3] is None else ref[3][:2000], None if ours[3] is None else ours[3][:2000]))
         policy = _stderr_policy(case, ref)
         if policy == "exact" and ref[2] != ours[2]:

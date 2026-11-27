@@ -218,7 +218,7 @@ fn resolve(path: &Path) -> PathBuf {
             Component::Normal(name) => {
                 resolved.push(name);
                 if fs::symlink_metadata(&resolved).is_ok() {
-                    if let Ok(canonical) = fs::canonicalize(&resolved) {
+                    if let Ok(canonical) = crate::osstr::canonicalize(&resolved) {
                         resolved = canonical;
                     }
                 }
@@ -475,7 +475,7 @@ mod tests {
     #[test]
     fn resolve_is_absolute_even_where_the_path_does_not_exist() {
         let dir = TempDir::new("resolve");
-        let root = fs::canonicalize(&dir.0).unwrap();
+        let root = crate::osstr::canonicalize(&dir.0).unwrap();
         std::os::unix::fs::symlink(&root, root.join("link")).unwrap();
         let wanted = root.join("missing/deeper");
         assert_eq!(resolve(&root.join("link/missing/./deeper")), wanted);
@@ -563,6 +563,8 @@ mod tests {
         ));
     }
 
+    // POSIX paths and HOME; the Windows locations are not ported (F-051).
+    #[cfg(unix)]
     #[test]
     fn config_path_order_and_expansion() {
         let env: HashMap<String, String> = [
@@ -579,7 +581,7 @@ mod tests {
                 "/a",
                 "/b",
                 "/venv/etc/jupyter",
-                "/home/u/.jupyter",
+                &format!("{}/.jupyter", resolve(Path::new("/home/u")).display()),
                 "/usr/local/etc/jupyter",
                 "/etc/jupyter"
             ]
@@ -597,6 +599,8 @@ mod tests {
         assert!(jupyter_config_path(&none).unwrap().is_empty());
     }
 
+    // POSIX paths and HOME; the Windows locations are not ported (F-051).
+    #[cfg(unix)]
     #[test]
     fn the_user_site_directory_is_not_searched() {
         let env: HashMap<String, String> = [("HOME", "/home/u")]
@@ -615,6 +619,8 @@ mod tests {
             .all(|p| !p.starts_with("/ub")));
     }
 
+    // POSIX paths and HOME; the Windows locations are not ported (F-051).
+    #[cfg(unix)]
     #[test]
     fn home_unset_uses_the_passwd_entry() {
         let none: HashMap<String, String> = HashMap::new();
@@ -624,6 +630,8 @@ mod tests {
         assert!(path[0].ends_with("/.jupyter"), "{path:?}");
     }
 
+    // POSIX paths and HOME; the Windows locations are not ported (F-051).
+    #[cfg(unix)]
     #[test]
     fn config_dirs_are_expanded_like_a_shell() {
         let dir = TempDir::new("config-expand");

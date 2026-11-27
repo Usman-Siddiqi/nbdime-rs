@@ -96,12 +96,21 @@ fn path_arg(ns: &Namespace, name: &str) -> Value {
 /// configuration file: an integer is a file descriptor, anything else is a `TypeError`.
 fn odd_file_exists(value: &Value) -> Result<bool> {
     match value {
-        Value::Int(Int::Small(fd)) if (0..=i64::from(i32::MAX)).contains(fd) => {
-            Ok(fs::metadata(format!("/proc/self/fd/{fd}")).is_ok())
-        }
+        Value::Int(Int::Small(fd)) if (0..=i64::from(i32::MAX)).contains(fd) => Ok(fd_is_open(*fd)),
         Value::Int(Int::Small(_)) => Ok(false),
         other => bail!("stat: path should be string, bytes, os.PathLike or integer, not {other:?}"),
     }
+}
+
+/// `os.stat(fd)` succeeds.
+#[cfg(unix)]
+fn fd_is_open(fd: i64) -> bool {
+    fs::metadata(format!("/dev/fd/{fd}")).is_ok()
+}
+
+#[cfg(not(unix))]
+fn fd_is_open(_fd: i64) -> bool {
+    false
 }
 
 /// `%s` of a value that is not a string.
@@ -305,7 +314,12 @@ mod tests {
     fn a_file_argument_from_a_config_file_may_be_a_number() {
         assert!(!odd_file_exists(&Value::from(99_999)).unwrap());
         assert!(!odd_file_exists(&Value::from(-1)).unwrap());
-        assert!(odd_file_exists(&Value::from(0)).unwrap());
+        #[cfg(unix)]
+        {
+            use std::os::fd::AsRawFd;
+            let open = fs::File::open(std::env::current_exe().unwrap()).unwrap();
+            assert!(odd_file_exists(&Value::from(i64::from(open.as_raw_fd()))).unwrap());
+        }
         assert!(odd_file_exists(&Value::Float(5.5)).is_err());
         assert!(odd_file_exists(&Value::Null).is_err());
         assert_eq!(display_value(&Value::from(5)), "5");

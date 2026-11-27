@@ -76,6 +76,22 @@ pub fn eprint(text: &str) {
     let _ = io::stderr().lock().write_all(text.as_bytes());
 }
 
+/// `fs::canonicalize` without Windows' `\\?\` prefix, which git and Python's paths do not use.
+pub fn canonicalize(path: impl AsRef<std::path::Path>) -> std::io::Result<std::path::PathBuf> {
+    let canonical = std::fs::canonicalize(path)?;
+    #[cfg(windows)]
+    {
+        let text = canonical.to_string_lossy();
+        if let Some(unc) = text.strip_prefix(r"\\?\UNC\") {
+            return Ok(format!(r"\\{unc}").into());
+        }
+        if let Some(rest) = text.strip_prefix(r"\\?\") {
+            return Ok(rest.into());
+        }
+    }
+    Ok(canonical)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

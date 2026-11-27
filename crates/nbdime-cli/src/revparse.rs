@@ -584,7 +584,7 @@ mod tests {
     /// Two commits on `main` (`a.ipynb`), a lightweight tag `light` and an annotated `v1`.
     fn repository(name: &str) -> (TempDir, Repo) {
         let dir = TempDir::new(name);
-        let root = fs::canonicalize(&dir.0).unwrap();
+        let root = crate::osstr::canonicalize(&dir.0).unwrap();
         git(&root, &["init", "-q", "-b", "main"]);
         fs::write(root.join("a.ipynb"), "one").unwrap();
         git(&root, &["add", "-A"]);

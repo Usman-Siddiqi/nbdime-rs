@@ -601,6 +601,12 @@ doubled final newline, and a common last line that is repeated after the conflic
   status". The terminal width comes from `COLUMNS` or defaults to 80. Parity is verified on Linux
   only. On Windows, upstream's text output uses CRLF line ends and nbdime-rs writes LF. Treat
   Windows as supported but not parity-tested.
+- **Also on Windows**: canonical paths drop the `\\?\` prefix, git clean filters run through
+  `cmd /c` (`shell=True`), and an integer file argument from a config file (`os.stat(fd)`) counts
+  as missing. The Jupyter config search path still uses the POSIX locations (`:` separator,
+  `/etc/jupyter`), not `%PROGRAMDATA%` and `;`. The unit tests that encode POSIX paths, `HOME`
+  or `/bin/sh` filters run on Unix only. The CLI test suite in `tests/cli.rs` is Unix-only for
+  the same reason.
 
 ## Open questions
 

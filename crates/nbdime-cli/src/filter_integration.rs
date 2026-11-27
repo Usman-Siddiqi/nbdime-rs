@@ -75,11 +75,7 @@ pub(crate) fn filtered(git_path: &str, path: &str) -> Result<Option<Source>> {
     if input.metadata()?.is_dir() {
         bail!("opening {}: Is a directory", osstr::show(path));
     }
-    // `shell=True` runs `/bin/sh`, whatever `sh` the PATH offers.
-    let output = Command::new("/bin/sh")
-        .arg("-c")
-        // Python merges the filter's stderr into its stdout.
-        .arg(osstr::to_os(&format!("exec 2>&1; {command}")))
+    let output = shell(&command)
         .stdin(Stdio::from(input))
         .output()
         .context("running the git filter")?;
@@ -100,7 +96,28 @@ pub fn apply_possible_filter(git_path: &str, path: Option<&str>) -> Result<Sourc
     Ok(filtered(git_path, path)?.unwrap_or_else(|| Source::Path(path.to_owned())))
 }
 
-#[cfg(test)]
+/// `subprocess.run(command, shell=True, stderr=STDOUT)`: `/bin/sh -c`, or `cmd /c` on Windows.
+#[cfg(unix)]
+fn shell(command: &str) -> Command {
+    let mut shell = Command::new("/bin/sh");
+    shell
+        .arg("-c")
+        // Python merges the filter's stderr into its stdout.
+        .arg(osstr::to_os(&format!("exec 2>&1; {command}")));
+    shell
+}
+
+#[cfg(windows)]
+fn shell(command: &str) -> Command {
+    use std::os::windows::process::CommandExt;
+    let mut shell = Command::new("cmd");
+    // `cmd /c` takes the rest of its command line verbatim, as `subprocess` passes it.
+    shell.raw_arg(format!("/c {command} 2>&1"));
+    shell
+}
+
+// The test drives `/bin/sh` filters such as `tr`.
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use std::path::Path;
@@ -122,7 +139,7 @@ mod tests {
     #[test]
     fn filters_follow_the_attributes_and_the_configuration() {
         let dir = crate::testutil::TempDir::new("filter-integration");
-        let repo = fs::canonicalize(&dir.0).unwrap();
+        let repo = crate::osstr::canonicalize(&dir.0).unwrap();
         git(&repo, &["init", "-q"]);
         fs::write(repo.join("a.ipynb"), "one\ntwo\n").unwrap();
         fs::write(repo.join("b.txt"), "plain\n").unwrap();

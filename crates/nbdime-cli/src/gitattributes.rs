@@ -67,14 +67,16 @@ pub fn config_output(scope: Option<&str>, key: &str) -> Result<Option<String>> {
 
 /// `os.path.dirname`.
 fn dirname(path: &str) -> &str {
-    match path.rfind('/') {
+    // `ntpath` splits at either slash.
+    const SEPARATORS: &[char] = if cfg!(windows) { &['/', '\\'] } else { &['/'] };
+    match path.rfind(SEPARATORS) {
         None => "",
         Some(i) => {
             let head = &path[..=i];
-            if head.chars().all(|c| c == '/') {
+            if head.chars().all(|c| SEPARATORS.contains(&c)) {
                 head
             } else {
-                head.trim_end_matches('/')
+                head.trim_end_matches(SEPARATORS)
             }
         }
     }

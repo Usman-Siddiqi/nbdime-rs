@@ -139,7 +139,7 @@ fn is_git_dir(dir: &Path) -> GitDirKind {
                 if text.is_empty() {
                     return GitDirKind::No;
                 }
-                match fs::canonicalize(dir.join(osstr::to_path(text))) {
+                match crate::osstr::canonicalize(dir.join(osstr::to_path(text))) {
                     Ok(path) => path,
                     Err(_) => normpath(&dir.join(osstr::to_path(text))),
                 }
@@ -288,7 +288,7 @@ fn repo_at(dir: &Path) -> Option<Repo> {
 /// `get_repo(path)`: the repository `path` is in (or is the top of), or `None`.
 pub fn get_repo(path: &Path) -> Option<Repo> {
     let absolute = std::path::absolute(path).ok()?;
-    let mut current = fs::canonicalize(&absolute).unwrap_or(absolute);
+    let mut current = crate::osstr::canonicalize(&absolute).unwrap_or(absolute);
     let mut popped = Vec::new();
     loop {
         if let Some(mut repo) = repo_at(&current) {
@@ -596,7 +596,7 @@ mod tests {
 
     /// A repository with two commits, a tag on the first and a subdirectory.
     fn repository(dir: &TempDir) -> PathBuf {
-        let repo = fs::canonicalize(&dir.0).unwrap().join("repo");
+        let repo = crate::osstr::canonicalize(&dir.0).unwrap().join("repo");
         fs::create_dir_all(repo.join("sub/deeper")).unwrap();
         run_git(&repo, &["init", "-q", "-b", "main"]);
         fs::write(repo.join("a.ipynb"), "1").unwrap();
@@ -708,7 +708,7 @@ mod tests {
     #[test]
     fn directories_outside_repositories_are_not_found() {
         let dir = sandbox("outside");
-        let plain = fs::canonicalize(&dir.0).unwrap().join("plain");
+        let plain = crate::osstr::canonicalize(&dir.0).unwrap().join("plain");
         fs::create_dir_all(&plain).unwrap();
         // A `.git` file that is not a gitfile ends the search like git does for GitPython.
         fs::write(plain.join(".git"), "not a gitfile").unwrap();

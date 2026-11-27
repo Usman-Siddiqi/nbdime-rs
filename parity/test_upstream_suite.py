@@ -58,6 +58,10 @@ def _run(tmp_path, shim):
     for name in ("SYSTEMROOT", "SYSTEMDRIVE", "COMSPEC", "PATHEXT", "TEMP", "TMP", "WINDIR"):
         if os.name == "nt" and name in os.environ:
             env[name] = os.environ[name]
+    if os.name == "nt":
+        # Upstream's stdio would otherwise be the ANSI code page, which cannot encode most of
+        # the generated text; nbdime-rs always writes UTF-8 (F-051).
+        env["PYTHONUTF8"] = "1"
     args = [REF_PY, "-m", "pytest", "-p", "no:cacheprovider", "-q", "-rA",
             "--basetemp", str(tmp_path / ("tmp-shim" if shim else "tmp-base"))]
     if shim:

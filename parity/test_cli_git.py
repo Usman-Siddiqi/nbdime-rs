@@ -183,9 +183,11 @@ def test_cli_git_diff_driver_filter_paths_and_diagnostics(sandbox):
                 "args": ["diff", "--use-filter", path, "a.ipynb", "0", "100644",
                          remote, "0", "100644"]}
 
-    cases = [case(os.fsdecode(b"a\xff.ipynb")),
-             case("a.ipynb", env={"GIT_CONFIG": "{dir}/bad-config"}),
+    cases = [case("a.ipynb", env={"GIT_CONFIG": "{dir}/bad-config"}),
              case("dir.ipynb", remote="dir.ipynb")]
+    # Windows has no byte file names to decode.
+    if os.name != "nt":
+        cases.insert(0, case(os.fsdecode(b"a\xff.ipynb")))
     check_cli(cases, root, env, min_cases=3)
 
 

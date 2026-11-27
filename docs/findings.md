@@ -607,16 +607,27 @@ doubled final newline, and a common last line that is repeated after the conflic
   `/etc/jupyter`), not `%PROGRAMDATA%` and `;`. The unit tests that encode POSIX paths, `HOME`
   or `/bin/sh` filters run on Unix only. The CLI test suite in `tests/cli.rs` is Unix-only for
   the same reason.
-- **Parity on macOS and Windows** (2026-11-27): CI now runs the full parity suite against
-  upstream on `macos-15` and `windows-latest` too, non-blocking. macOS: 128 of 129 pass. The one
-  failure is a single `git diff`/`nbdiff <rev>` case with a clean filter, whose failing case
-  changes from run to run (a different case failed in each of two runs, and the filter test
-  that failed in the first passed in the second). That points at timing (git's racy-index
-  check on a fast file system) rather than at the port, but it is not yet proven. Windows: 94 of
-  129 pass. Most failures are the CRLF vs LF text output above. Two are harness issues: a
-  nested pytest run without the Windows socket environment (`WinError 10106`), and one merge
-  case where a `\r\n` inside a cell source comes back as `\n` through the Python module path.
-  The second needs a look before Windows is called parity-tested. Linux stays the gate.
+- **Parity on macOS and Windows** (2026-11-27): CI runs the full parity suite against upstream
+  on `macos-15` and `windows-latest` as well as Linux.
+  - macOS passes 129 of 129 and is now blocking. The earlier failures were two timing flakes in
+    the harness, not in the port. Upstream prints the mtime of `/dev/null` in diff headers, and
+    macOS updates that mtime on every write to it, so the harness masks it. Git skips
+    re-reading a file only when its mtime is older than the index ("racily clean" otherwise),
+    so the git fixtures now backdate the files they commit, each revision to its own second.
+  - Windows text output now matches Python's text mode: every `"\n"` written to stdout, stderr,
+    `--out` files, notebooks, `.gitattributes` and the external renderers' temporary files
+    becomes `"\r\n"`, and an existing `"\r\n"` becomes `"\r\r\n"` (`nbdime_core::textmode`). The
+    temporary files are what keeps a `"\r\n"` inside a cell source through `git merge-file`
+    on Windows, as upstream does. The null file is `nul` there, as `os.devnull` is.
+  - Upstream on Windows writes stdio in the ANSI code page unless Python's UTF-8 mode is on, and
+    crashes (`UnicodeEncodeError`) on most non-Latin text. nbdime-rs always writes UTF-8. The
+    harness compares against upstream in UTF-8 mode (`PYTHONUTF8=1`). Deliberate deviation.
+  - Windows is still non-blocking: 18 of 129 suites differ, all byte comparisons of CLI output
+    (nbdiff, nbmerge, nbshow, git drivers) plus one upstream test
+    (`test_nbdiff_app_config_ignores`, a config file in the working directory that is not
+    picked up). The remaining causes are not diagnosed yet. Likely suspects are path spelling
+    in headers (`\` vs `/`), the Jupyter config path (POSIX locations, see above), and how git
+    for Windows passes paths to the drivers.
 
 ## Open questions
 

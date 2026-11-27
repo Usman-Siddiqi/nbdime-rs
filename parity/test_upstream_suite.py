@@ -54,6 +54,10 @@ def _run(tmp_path, shim):
         "PYTHONPATH": str(ROOT / "parity"),
         "NBDIME_RS_BIN": OUR_BIN,
     }
+    # Windows processes need these to start at all (Python's site and sockets, git, the C runtime).
+    for name in ("SYSTEMROOT", "SYSTEMDRIVE", "COMSPEC", "PATHEXT", "TEMP", "TMP", "WINDIR"):
+        if os.name == "nt" and name in os.environ:
+            env[name] = os.environ[name]
     args = [REF_PY, "-m", "pytest", "-p", "no:cacheprovider", "-q", "-rA",
             "--basetemp", str(tmp_path / ("tmp-shim" if shim else "tmp-base"))]
     if shim:

@@ -10,6 +10,7 @@ including the repository files the commands write (.git/config, attributes, merg
 import json
 import os
 import subprocess
+import time
 
 from gen import rng_for
 from gen_nb import dumps_disk, mutate_notebook, random_notebook
@@ -47,6 +48,19 @@ def _env(base_env):
     return dict(base_env, **GIT_ENV)
 
 
+def _backdate(age, *paths):
+    """Sets the mtime of the files just written to `age` seconds ago, before git indexes them.
+
+    A file modified in the same timestamp tick as the index is "racily clean": git re-reads it
+    (through any clean filter) instead of trusting its stat data, so whether `git diff` hands it
+    to the driver would depend on timing. macOS runners hit that often enough to flake. Each
+    revision gets its own whole second, so a same-size rewrite still changes the stat data.
+    """
+    t = int(time.time()) - age
+    for p in paths:
+        os.utime(p, (t, t))
+
+
 def diff_repo(texts, env, attrs=True, driver=DIFF_CMD, extra_config=()):
     """main: a.ipynb, sub/b.ipynb at rev0, rev1 (a renamed copy c.ipynb at rev2); working-tree
     and staged changes on top."""
@@ -57,15 +71,18 @@ def diff_repo(texts, env, attrs=True, driver=DIFF_CMD, extra_config=()):
         (d / "a.ipynb").write_text(texts[0])
         (d / "sub" / "b.ipynb").write_text(texts[1])
         (d / "notes.txt").write_text("one\n")
+        _backdate(30, d / "a.ipynb", d / "sub" / "b.ipynb", d / "notes.txt")
         _git(d, "add", "-A", env=e)
         _git(d, "commit", "-q", "-m", "rev0", env=e)
         (d / "a.ipynb").write_text(texts[1])
         (d / "sub" / "b.ipynb").write_text(texts[2])
         (d / "notes.txt").write_text("two\n")
+        _backdate(20, d / "a.ipynb", d / "sub" / "b.ipynb", d / "notes.txt")
         _git(d, "commit", "-q", "-am", "rev1", env=e)
         _git(d, "mv", "a.ipynb", "c.ipynb", env=e)
         _git(d, "commit", "-q", "-m", "rev2", env=e)
         (d / "c.ipynb").write_text(texts[3])
+        _backdate(10, d / "c.ipynb")
         _git(d, "add", "c.ipynb", env=e)
         (d / "sub" / "b.ipynb").write_text(texts[4])
         if driver:

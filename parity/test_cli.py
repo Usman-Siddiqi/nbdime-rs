@@ -171,6 +171,8 @@ def _unside(case, which, result, root):
             return b
         for old, new in subs:
             b = b.replace(old, new)
+        # Upstream prints the mtime of /dev/null, which macOS updates on every write to it.
+        b = re.sub(rb"(/dev/null  )\d{4}-\d\d-\d\d \d\d:\d\d:\d\d(?:\.\d+)?", rb"\1{time}", b)
         for pat, rep in case.get("mask", ()):
             b = re.sub(pat, rep, b)
         return b

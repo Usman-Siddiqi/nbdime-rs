@@ -25,6 +25,7 @@ pub mod revparse;
 mod testutil;
 pub mod utils;
 
+use nbdime_core::textmode::TextWriter;
 use std::io::{self, Write};
 use std::path::Path;
 
@@ -43,7 +44,8 @@ type Entry = fn(&str, &[String], &mut dyn Write) -> anyhow::Result<i32>;
 
 fn run_entry(entry: Entry, prog: &str, args: &[String]) -> i32 {
     let stdout = io::stdout();
-    let mut out = io::BufWriter::new(stdout.lock());
+    // `sys.stdout` is a text stream.
+    let mut out = TextWriter::new(io::BufWriter::new(stdout.lock()));
     let result =
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| entry(prog, args, &mut out)));
     let _ = out.flush();

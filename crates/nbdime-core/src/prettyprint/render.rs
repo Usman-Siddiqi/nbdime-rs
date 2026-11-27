@@ -503,8 +503,9 @@ fn create_private_dir(path: &Path) -> io::Result<()> {
 }
 
 /// [`write_private`], with an error that names the file.
+/// `io.open(path, "w", encoding="utf8").write(text)`, newline translation included.
 fn write_named(path: &Path, text: &str) -> Result<(), RenderError> {
-    write_private(path, text)
+    write_private(path, &crate::textmode::native(text))
         .map_err(|e| RenderError(format!("cannot write {}: {e}", path.display())))
 }
 

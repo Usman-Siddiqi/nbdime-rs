@@ -10,6 +10,7 @@ use nbdime_core::log::{self, Level};
 use nbdime_core::merging::{merge_notebooks, MergeDecision, MergeDecisionBuilder};
 use nbdime_core::nbformat;
 use nbdime_core::prettyprint::Printer;
+use nbdime_core::textmode;
 use nbdime_core::value::Int;
 use nbdime_core::{Map, Value};
 
@@ -199,7 +200,7 @@ pub(crate) fn main_merge(
             let list = Value::List(decisions.iter().map(MergeDecision::to_value).collect());
             let mut text = json::dumps(&list, &DumpOptions::nbdime_diff_file());
             text.push('\n');
-            fs::write(osstr::to_path(mfn), text)
+            fs::write(osstr::to_path(mfn), textmode::native(&text).as_bytes())
                 .with_context(|| format!("writing {}", osstr::show(mfn)))?;
         } else {
             log_decisions(&b, &decisions, ns, logger, 70)?;
@@ -234,7 +235,7 @@ pub(crate) fn write_notebook(path: &str, notebook: &Value) -> Result<()> {
 fn write_notebook_text(path: &str, text: &str) -> Result<()> {
     let mut file = fs::File::create(osstr::to_path(path))
         .with_context(|| format!("opening {}", osstr::show(path)))?;
-    file.write_all(text.as_bytes())?;
+    file.write_all(textmode::native(text).as_bytes())?;
     Ok(())
 }
 

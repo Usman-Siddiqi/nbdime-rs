@@ -8,6 +8,7 @@ use nbdime_core::diff_format::diff_into_value;
 use nbdime_core::diffing::{diff_notebooks, NotebookDiffConfig};
 use nbdime_core::json::{self, DumpOptions};
 use nbdime_core::prettyprint::Printer;
+use nbdime_core::textmode;
 use nbdime_core::Value;
 
 use crate::argparse::{Action, Namespace, Parser};
@@ -146,7 +147,7 @@ fn handle_diff(
         let mut file = fs::File::create(osstr::to_path(output))
             .with_context(|| format!("opening {}", osstr::show(output)))?;
         let text = json::dumps(&diff_into_value(diff), &DumpOptions::nbdime_diff_file());
-        file.write_all(text.as_bytes())?;
+        file.write_all(textmode::native(&text).as_bytes())?;
     } else {
         let config = prettyprint_config(ns);
         let mut text = String::new();

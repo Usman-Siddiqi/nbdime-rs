@@ -178,7 +178,7 @@ pub fn add_attributes(scope: Option<&str>, marker: &str, line: &str) -> Result<(
         .create(true)
         .open(&path)
         .with_context(|| format!("opening {}", osstr::show(&gitattributes)))?;
-    file.write_all(line.as_bytes())?;
+    file.write_all(nbdime_core::textmode::native(line).as_bytes())?;
     Ok(())
 }
 

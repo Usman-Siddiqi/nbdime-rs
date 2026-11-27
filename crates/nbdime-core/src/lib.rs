@@ -18,6 +18,7 @@ pub mod patch;
 pub mod path;
 pub mod prettyprint;
 pub mod py;
+pub mod textmode;
 pub mod value;
 
 pub use diff_format::{Diff, DiffEntry, Key, Op};

@@ -71,9 +71,11 @@ pub fn repr(text: &str) -> String {
     out
 }
 
-/// Writes text to stderr; failures are ignored.
+/// Writes text to stderr, a text stream as `sys.stderr` is; failures are ignored.
 pub fn eprint(text: &str) {
-    let _ = io::stderr().lock().write_all(text.as_bytes());
+    let _ = io::stderr()
+        .lock()
+        .write_all(nbdime_core::textmode::native(text).as_bytes());
 }
 
 /// `fs::canonicalize` without Windows' `\\?\` prefix, which git and Python's paths do not use.

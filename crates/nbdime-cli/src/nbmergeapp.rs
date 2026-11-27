@@ -298,6 +298,7 @@ fn handle_agreed_deletion(
 mod tests {
     use super::*;
     use crate::testutil::{notebook, run_app, TempDir};
+    use crate::utils::EXPLICIT_MISSING_FILE as NUL;
     use std::path::Path;
 
     #[test]
@@ -395,17 +396,10 @@ mod tests {
         let dir = TempDir::new("nbmerge-deleted");
         let base = dir.write("b.ipynb", &notebook(&["a = 1"]));
         let target = dir.write("out.ipynb", "old");
-        let (code, _) = run_app(
-            run,
-            "nbmerge",
-            &[&base, "/dev/null", "/dev/null", "--out", &target],
-        );
+        let (code, _) = run_app(run, "nbmerge", &[&base, NUL, NUL, "--out", &target]);
         assert_eq!(code, 0);
         assert!(!Path::new(&target).exists());
-        let args: Vec<String> = ["/dev/null", "/dev/null", "/dev/null"]
-            .iter()
-            .map(|s| (*s).to_owned())
-            .collect();
+        let args: Vec<String> = [NUL, NUL, NUL].iter().map(|s| (*s).to_owned()).collect();
         assert!(run(
             &crate::testutil::isolated(),
             "nbmerge",

@@ -216,10 +216,11 @@ mod tests {
     fn null_file_against_a_notebook() {
         let dir = TempDir::new("nbdiff-null");
         let a = dir.write("a.ipynb", &notebook(&["x = 1"]));
-        let (code, out) = run_app(run, "nbdiff", &["/dev/null", &a, "--no-color"]);
+        let nul = EXPLICIT_MISSING_FILE;
+        let (code, out) = run_app(run, "nbdiff", &[nul, &a, "--no-color"]);
         assert_eq!(code, 0);
-        assert!(out.starts_with(&format!("nbdiff /dev/null {a}\n")));
-        assert!(run_app_err(&["/dev/null", "/dev/null"]));
+        assert!(out.starts_with(&format!("nbdiff {nul} {a}\n")));
+        assert!(run_app_err(&[nul, nul]));
     }
 
     fn run_app_err(args: &[&str]) -> bool {

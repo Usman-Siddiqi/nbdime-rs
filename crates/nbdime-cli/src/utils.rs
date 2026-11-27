@@ -6,8 +6,8 @@ use anyhow::{anyhow, bail, Context, Result};
 use nbdime_core::nbformat::{self, NbformatError};
 use nbdime_core::{Map, Value};
 
-/// The name of the null file, which stands for an added or removed notebook.
-pub const EXPLICIT_MISSING_FILE: &str = "/dev/null";
+/// The name of the null file (`os.devnull`), which stands for an added or removed notebook.
+pub const EXPLICIT_MISSING_FILE: &str = if cfg!(windows) { "nul" } else { "/dev/null" };
 
 /// A notebook given on the command line or found in a git revision.
 #[derive(Clone, Debug, PartialEq, Eq)]

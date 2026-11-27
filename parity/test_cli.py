@@ -28,6 +28,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -502,16 +503,18 @@ def test_cli_review_regressions(sandbox):
                         ["HEAD:a.ipynb"], ["HEAD", ""], [""], ["HEAD~1", "HEAD", "", "a.ipynb"])]
     cases.append({"cmd": "nbdiff", "args": ["HEAD~1"], "cwd": str(repo / ".git")})
 
-    odd = base / os.fsdecode(b"\xff.ipynb")
-    odd.write_text(texts[0])
     other = base / "other.ipynb"
     other.write_text(texts[1])
-    cases += [
-        {"cmd": "nbdiff", "args": [str(odd), str(other)]},
-        {"cmd": "nbdiff", "args": ["--no-color", str(other), str(odd), "--out", "{out}"]},
-        {"cmd": "nbmerge", "args": [str(odd), str(other), str(odd), "--out", "{out}"]},
-        {"cmd": "nbdiff", "args": ["-1\n", str(other)]},
-    ]
+    # macOS (APFS) and Windows refuse file names that are not valid Unicode.
+    if sys.platform == "linux":
+        odd = base / os.fsdecode(b"\xff.ipynb")
+        odd.write_text(texts[0])
+        cases += [
+            {"cmd": "nbdiff", "args": [str(odd), str(other)]},
+            {"cmd": "nbdiff", "args": ["--no-color", str(other), str(odd), "--out", "{out}"]},
+            {"cmd": "nbmerge", "args": [str(odd), str(other), str(odd), "--out", "{out}"]},
+        ]
+    cases.append({"cmd": "nbdiff", "args": ["-1\n", str(other)]})
 
     plain = base / "plain.ipynb"
     plain.write_text(texts[2])

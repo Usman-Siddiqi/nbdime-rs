@@ -24,7 +24,8 @@ import pytest
 
 from harness import ROOT
 
-DEV = os.environ.get("NBDIME_RS_DEV", str(ROOT / "target" / "release" / "nbdime-rs-dev"))
+EXE = ".exe" if os.name == "nt" else ""
+DEV = os.environ.get("NBDIME_RS_DEV", str(ROOT / "target" / "release" / ("nbdime-rs-dev" + EXE)))
 SUITES = ["test_pilot_generic_diff.py", "test_u05_patch.py", "test_u04_notebook_diff.py",
           "test_u10_merge.py"]
 
@@ -48,10 +49,14 @@ def ext(tmp_path_factory):
 def test_u15_suites_through_the_python_api(ext, tmp_path):
     pkg, _ = ext
     stats = tmp_path / "stats.jsonl"
-    wrapper = tmp_path / "engine"
-    wrapper.write_text("#!/bin/sh\nexec %s %s %s \"$@\"\n" % (
-        sys.executable, ROOT / "parity" / "tools" / "pyext_engine.py", DEV))
-    wrapper.chmod(0o755)
+    args = (sys.executable, ROOT / "parity" / "tools" / "pyext_engine.py", DEV)
+    if os.name == "nt":
+        wrapper = tmp_path / "engine.cmd"
+        wrapper.write_text('@"%s" "%s" "%s" %%*\n' % args)
+    else:
+        wrapper = tmp_path / "engine"
+        wrapper.write_text("#!/bin/sh\nexec %s %s %s \"$@\"\n" % args)
+        wrapper.chmod(0o755)
     env = dict(os.environ, NBDIME_RS_DEV=str(wrapper), NBDIME_RS_PYEXT_STATS=str(stats),
                PYTHONPATH=str(pkg) + os.pathsep + os.environ.get("PYTHONPATH", ""))
     p = subprocess.run([sys.executable, "-m", "pytest", "-p", "no:cacheprovider"] + SUITES,

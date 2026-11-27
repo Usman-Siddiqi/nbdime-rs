@@ -37,6 +37,15 @@ in `docs/findings.md`.
    payloads are converted to `NotebookNode`); gate 129/129 after the change. Benchmark:
    `bench/upstream_engine.py`, results in `bench/results/2026-11-27-upstream-engine.json`.
 
+## PyPI release (ready, not published)
+- `pip install nbdime-rs` gives the `nbdime_rs` module and native commands (wheel built by
+  `scripts/build_wheel.py`). `.github/workflows/release.yml` builds wheels for Linux x86-64 and
+  arm64 (manylinux2014), macOS Intel and arm64, and Windows x86-64, plus an sdist. It smoke-tests
+  every wheel (`scripts/smoke_wheel.py`) and runs the unit tests on macOS and Windows. It
+  publishes only for a `v*` tag, through trusted publishing. Green since 2026-11-27.
+- The owner's steps are in `docs/release.md`. Open: installing nbdime-rs next to nbdime replaces
+  nbdime's commands, which matters for an upstream `accel` extra (F-051).
+
 ## Workflow
 
 - One hostile review per unit. Record the findings, add regression coverage and verify fixes with

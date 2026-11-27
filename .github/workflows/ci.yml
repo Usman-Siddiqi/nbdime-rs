@@ -27,8 +27,6 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-15, windows-latest]
-    # Exact-output parity is established on Linux; macOS and Windows report but do not block yet.
-    continue-on-error: ${{ matrix.os == 'windows-latest' }}
     defaults:
       run:
         shell: bash

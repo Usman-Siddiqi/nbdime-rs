@@ -128,9 +128,31 @@ jobs:
       - shell: bash
         run: '"$PY" -I scripts/smoke_wheel.py'
 
+  check:
+    name: metadata check (what PyPI will validate)
+    needs: [wheels, sdist]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+          path: dist
+      - run: pip install twine
+      - run: twine check --strict dist/*
+      - name: Five wheels and one sdist, all of this version
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
+          ls dist
+          test "$(ls dist/nbdime_rs-"$version"-*.whl | wc -l)" = 5
+          test -f "dist/nbdime_rs-$version.tar.gz"
+
   publish:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [wheels, sdist, test, unit-tests]
+    needs: [wheels, sdist, test, unit-tests, check]
     runs-on: ubuntu-latest
     environment:
       name: pypi

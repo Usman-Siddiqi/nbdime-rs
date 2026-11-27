@@ -607,6 +607,16 @@ doubled final newline, and a common last line that is repeated after the conflic
   `/etc/jupyter`), not `%PROGRAMDATA%` and `;`. The unit tests that encode POSIX paths, `HOME`
   or `/bin/sh` filters run on Unix only. The CLI test suite in `tests/cli.rs` is Unix-only for
   the same reason.
+- **Parity on macOS and Windows** (2026-11-27): CI now runs the full parity suite against
+  upstream on `macos-15` and `windows-latest` too, non-blocking. macOS: 128 of 129 pass. The one
+  failure is a single `git diff`/`nbdiff <rev>` case with a clean filter, whose failing case
+  changes from run to run (a different case failed in each of two runs, and the filter test
+  that failed in the first passed in the second). That points at timing (git's racy-index
+  check on a fast file system) rather than at the port, but it is not yet proven. Windows: 94 of
+  129 pass. Most failures are the CRLF vs LF text output above. Two are harness issues: a
+  nested pytest run without the Windows socket environment (`WinError 10106`), and one merge
+  case where a `\r\n` inside a cell source comes back as `\n` through the Python module path.
+  The second needs a look before Windows is called parity-tested. Linux stays the gate.
 
 ## Open questions
 

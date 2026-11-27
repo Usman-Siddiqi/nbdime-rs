@@ -43,6 +43,7 @@ in `docs/findings.md`.
   arm64 (manylinux2014), macOS Intel and arm64, and Windows x86-64, plus an sdist. It smoke-tests
   every wheel (`scripts/smoke_wheel.py`) and runs the unit tests on macOS and Windows. It
   publishes only for a `v*` tag, through trusted publishing. Green since 2026-11-27.
+- CI parity also runs on macOS (128/129) and Windows (94/129), non-blocking; details in F-051.
 - The owner's steps are in `docs/release.md`. Open: installing nbdime-rs next to nbdime replaces
   nbdime's commands, which matters for an upstream `accel` extra (F-051).
 

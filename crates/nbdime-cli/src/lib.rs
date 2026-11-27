@@ -64,16 +64,25 @@ fn run_entry(entry: Entry, prog: &str, args: &[String]) -> i32 {
     }
 }
 
+/// The program name argparse shows for `argv0`. pip's console-script wrapper first strips
+/// `-script.pyw` or `.exe` from `sys.argv[0]`, so on Windows the name has no `.exe`.
+fn prog_name(argv0: &str) -> String {
+    let stem = argv0
+        .strip_suffix("-script.pyw")
+        .or_else(|| argv0.strip_suffix(".exe"))
+        .unwrap_or(argv0);
+    Path::new(stem)
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
 /// Runs one of the commands as the process `argv` describes it and returns the exit status.
 fn run(entry: Entry) -> i32 {
     let argv: Vec<String> = std::env::args_os()
         .map(|arg| osstr::from_os(&arg))
         .collect();
-    let prog = argv
-        .first()
-        .and_then(|a| Path::new(a).file_name())
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default();
+    let prog = argv.first().map(|a| prog_name(a)).unwrap_or_default();
     let args: Vec<String> = argv.into_iter().skip(1).collect();
     for &size in &stack_sizes_to_try() {
         let (prog, args) = (prog.clone(), args.clone());
@@ -145,6 +154,14 @@ pub fn git_nbmergetool_main() -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prog_name_drops_what_the_console_script_wrapper_drops() {
+        assert_eq!(prog_name("/usr/bin/nbdiff"), "nbdiff");
+        assert_eq!(prog_name("bin/nbdiff.exe"), "nbdiff");
+        assert_eq!(prog_name("nbdiff-script.pyw"), "nbdiff");
+        assert_eq!(prog_name("nbdiff.EXE"), "nbdiff.EXE");
+    }
 
     #[test]
     fn a_stack_size_is_always_on_offer_and_never_the_probe_alone() {

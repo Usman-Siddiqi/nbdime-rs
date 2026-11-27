@@ -284,6 +284,8 @@ fn non_utf8(name: &[u8]) -> std::ffi::OsString {
     std::ffi::OsString::from_vec(name.to_vec())
 }
 
+// APFS refuses names that are not UTF-8.
+#[cfg(not(target_os = "macos"))]
 #[test]
 fn names_that_are_not_utf8_are_opened_and_shown_like_python() {
     let sandbox = Sandbox::new("bytes");
@@ -396,6 +398,8 @@ fn clean_filters_run_in_bin_sh() {
     assert!(text(&output.stdout).contains(CHANGED_A));
 }
 
+// `ulimit -v` (RLIMIT_AS) is not enforced on macOS.
+#[cfg(target_os = "linux")]
 #[test]
 fn a_small_address_space_gets_a_smaller_stack_instead_of_a_silent_exit() {
     let sandbox = Sandbox::new("ulimit");
@@ -475,8 +479,8 @@ fn config_values_of_the_wrong_type_fail_where_upstream_fails() {
     );
     assert_eq!(output.status.code(), Some(1));
     assert!(output.stdout.is_empty() && !output.stderr.is_empty());
-    // `os.path.exists(5)` is false for a file descriptor that is not open.
-    let dir = config_dir(&sandbox, "base", r#"{"NbMerge": {"base": 5}}"#);
+    // `os.path.exists(987)` is false for a file descriptor that is not open.
+    let dir = config_dir(&sandbox, "base", r#"{"NbMerge": {"base": 987}}"#);
     let output = run_in(
         &sandbox,
         env!("CARGO_BIN_EXE_nbmerge"),
@@ -486,7 +490,7 @@ fn config_values_of_the_wrong_type_fail_where_upstream_fails() {
     assert_eq!(output.status.code(), Some(1));
     assert_eq!(
         text(&output.stderr),
-        "[E nbmergeapp:35] Cannot find file '5'\n"
+        "[E nbmergeapp:35] Cannot find file '987'\n"
     );
 }
 

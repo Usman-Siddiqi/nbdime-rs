@@ -1488,21 +1488,29 @@ mod tests {
 
     #[test]
     fn diffs_nested_beyond_the_limit_are_too_deep() {
-        let chain = |levels: usize| {
-            let a = nested_json("{", "}", levels);
-            let mut diff = r#"{"op": "remove", "key": "a"}"#.to_owned();
-            for _ in 1..levels {
-                diff = format!(r#"{{"op": "patch", "key": "a", "diff": [{diff}]}}"#);
-            }
-            (a, format!("[{diff}]"))
-        };
-        let (a, diff) = chain(MAX_DEPTH - 1);
-        assert!(notebook_diff(&plain(), &a, &diff).is_ok());
-        let (a, diff) = chain(MAX_DEPTH + 1);
-        assert_eq!(
-            notebook_diff(&plain(), &a, &diff),
-            Err(PrettyPrintError::TooDeep)
-        );
+        // Unoptimised frames at MAX_DEPTH need more than a default test thread's stack on Windows.
+        std::thread::Builder::new()
+            .stack_size(256 << 20)
+            .spawn(|| {
+                let chain = |levels: usize| {
+                    let a = nested_json("{", "}", levels);
+                    let mut diff = r#"{"op": "remove", "key": "a"}"#.to_owned();
+                    for _ in 1..levels {
+                        diff = format!(r#"{{"op": "patch", "key": "a", "diff": [{diff}]}}"#);
+                    }
+                    (a, format!("[{diff}]"))
+                };
+                let (a, diff) = chain(MAX_DEPTH - 1);
+                assert!(notebook_diff(&plain(), &a, &diff).is_ok());
+                let (a, diff) = chain(MAX_DEPTH + 1);
+                assert_eq!(
+                    notebook_diff(&plain(), &a, &diff),
+                    Err(PrettyPrintError::TooDeep)
+                );
+            })
+            .unwrap()
+            .join()
+            .unwrap();
     }
 
     #[test]

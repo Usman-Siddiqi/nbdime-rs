@@ -5,24 +5,88 @@ Jupyter notebooks. The goal is a drop-in replacement for nbdime's terminal and g
 with the same output, that is far faster. A second goal is an optional accelerated engine that
 upstream nbdime could use.
 
-**Status (November 2026).** The CLI, Git integration and optional Python engine pass the
-129-test parity gate. Known differences are documented below. The larger seeded differential
-runs are in progress. See [What works](#what-works) and [Current state](docs/STATE.md).
+**Status (November 2026).** The CLI, the git integration and the optional Python engine pass the
+129-test parity gate against nbdime 4.0.4. Known differences are listed under
+[Deviations](#deviations-from-upstream). PyPI publishing is pending; see [Install](#install).
 
-## Why
+## Why use this?
 
-On real notebooks upstream nbdime is slow. It aligns cells with a brute-force grid that is
-quadratic in the number of cells, and most of the cost is in Python's `difflib`. Notebooks
-without cell ids (nbformat 4.4 and older, still very common) are about 50 times slower again.
-On top of that, every `nbdiff` run pays about a second of interpreter start-up. The analysis is in
-[docs/upstream-performance.md](docs/upstream-performance.md).
+If `nbdiff` or `git diff` on notebooks feels slow, this is for you. nbdime-rs gives the same
+output as nbdime 4.0.4, but much faster, and the bigger the notebook, the bigger the gap:
 
-## Performance
+- **100 cells:** 1.50 s with nbdime, 0.008 s with nbdime-rs
+- **1,600 cells:** 2.29 s vs 0.163 s
+- **1,600 cells without cell ids** (older notebooks): 39.4 s vs 0.430 s
+- **3,000 cells without cell ids:** over 143 s vs 1.37 s
 
-`nbdiff --no-color base.ipynb local.ipynb`, end to end: process start, reading, diffing and
-printing. The notebooks are generated realistic notebooks (`bench/gen_notebooks.py`) with about 5%
-of cells changed. The machine is a 4-vCPU Intel Xeon at 2.10 GHz cloud VM with 15 GB RAM. Raw
-results are in `bench/results/2026-11-21-cli.json` and `bench/results/2026-11-21-rs-cli.json`.
+That is the full `nbdiff` command, start to finish, with about 5% of cells changed. The
+[benchmarks](#benchmarks) say exactly what was measured.
+
+Upstream aligns cells with a brute-force grid that is quadratic in the number of cells, and most
+of the cost is in Python's `difflib`. Notebooks without cell ids (nbformat 4.4 and older, still
+very common) are much slower again, and every `nbdiff` run pays about a second of interpreter
+start-up. The analysis is in [docs/upstream-performance.md](docs/upstream-performance.md).
+
+nbdime-rs is a drop-in replacement for nbdime's terminal and git tools: `nbdiff`, `nbmerge`,
+`nbshow`, `nbpatch`, `nbdime`, and the git diff and merge drivers. The web viewer is not
+included.
+
+**About how it was built:** most of the code was written with AI coding agents, under my
+direction. That is why it is tested so heavily. Every change runs against real nbdime on about
+10,000 random and adversarial notebook pairs and has to match exactly. Known differences are
+listed [below](#deviations-from-upstream).
+
+## Install
+
+From PyPI (wheels for Linux x86-64 and arm64, macOS Intel and Apple silicon, and Windows
+x86-64, for CPython 3.9 and later):
+
+```sh
+pip install nbdime-rs
+```
+
+This installs the native commands (`nbdiff`, `nbmerge`, `nbshow`, `nbpatch`, `nbdime` and the
+git drivers and tools) and the `nbdime_rs` Python module. Then enable the git integration:
+
+```sh
+nbdime config-git --enable --global
+```
+
+**PyPI publishing is pending.** Until the first release, install from source. You need Rust 1.82
+or newer and git:
+
+```sh
+git clone https://github.com/Usman-Siddiqi/nbdime-rs
+cd nbdime-rs
+cargo install --path crates/nbdime-cli
+```
+
+or, without cloning:
+
+```sh
+cargo install --git https://github.com/Usman-Siddiqi/nbdime-rs nbdime-cli
+```
+
+This installs the commands into `~/.cargo/bin`. They read the same configuration files as
+upstream (`nbdime_config.json` in the Jupyter config path and in the current directory). The
+`nbdime_rs` module ships only in the wheel.
+
+**Installing next to nbdime.** nbdime-rs installs commands with the same names as nbdime's. If
+both are installed in one environment, nbdime-rs replaces nbdime's `nbdiff`, `nbmerge`, `nbshow`,
+`nbpatch` and `nbdime` (see F-051 in [docs/findings.md](docs/findings.md)).
+
+`git` must be on `PATH`, as it is for upstream. Multi-line strings in diffs are rendered with
+`git diff --no-index`, and inline source conflicts with `git merge-file`, both run exactly as
+upstream runs them. If git is missing, the same fallbacks are used: `diff`/`diff3`, then built-in
+renderers. Your git configuration is honoured, as upstream honours it.
+
+## Benchmarks
+
+**CLI, end to end.** `nbdiff --no-color base.ipynb local.ipynb`: process start, reading, diffing
+and printing. The notebooks are generated realistic notebooks (`bench/gen_notebooks.py`) with
+about 5% of cells changed. The machine is a 4-vCPU Intel Xeon at 2.10 GHz cloud VM with 15 GB
+RAM, Linux, CPython 3.13. Raw results are in `bench/results/2026-11-21-cli.json` and
+`bench/results/2026-11-21-rs-cli.json`.
 
 | cells | cell ids | nbdime 4.0.4 | nbdime-rs | speed-up |
 |------:|:--------:|-------------:|----------:|---------:|
@@ -36,30 +100,25 @@ results are in `bench/results/2026-11-21-cli.json` and `bench/results/2026-11-21
 
 The 3,000-cell upstream figure is the time spent inside `nbdime.diff_notebooks` alone, measured
 in-process (`bench/results/2026-11-19-upstream-baseline.json`). The full command is slower still.
-
 The upstream column is a single run per size; nbdime-rs is the best of three. Start-up alone is
-about 2 ms, against about 1 s for upstream. Some cases are still slower than they should be; the
-list is in [Known issues](#known-issues).
+about 2 ms, against about 1 s for upstream. Some cases are still slower than they should be; see
+[Known issues](#known-issues).
 
-## Install
+**Engine inside nbdime.** The `nbdime_rs` module can also serve as an optional engine for
+upstream nbdime (a local patch, `docs/upstream/optional-rust-engine.patch`, not yet proposed
+upstream). In-process median of 3 calls, nbdime 4.0.4, CPython 3.13, 4-vCPU Xeon at 2.30 GHz, about
+5% of cells changed (`bench/upstream_engine.py`, `bench/results/2026-11-27-upstream-engine.json`):
 
-nbdime-rs is not on PyPI or crates.io yet. To build from source you need Rust 1.82 or newer and
-git:
+| Notebook | Diff: Python | Diff: engine | Merge: Python | Merge: engine |
+|---|---:|---:|---:|---:|
+| 100 cells | 6.5 ms | 1.4 ms | 16 ms | 5.2 ms |
+| 400 cells | 44 ms | 5.8 ms | 104 ms | 20 ms |
+| 1,600 cells | 661 ms | 29 ms | 1.21 s | 107 ms |
+| 400 cells, no ids | 1.82 s | 9.6 ms | 3.49 s | 28 ms |
+| 1,600 cells, no ids | 30.4 s | 114 ms | 60.8 s | 241 ms |
 
-```sh
-git clone https://github.com/Usman-Siddiqi/nbdime-rs
-cd nbdime-rs
-cargo install --path crates/nbdime-cli
-```
-
-This installs `nbdiff`, `nbmerge` and `nbdime` into `~/.cargo/bin`. They read the same
-configuration files as upstream (`nbdime_config.json` in the Jupyter config path and in the
-current directory).
-
-`git` must be on `PATH`, as it is for upstream. Multi-line strings in diffs are rendered with
-`git diff --no-index`, and inline source conflicts with `git merge-file`, both run exactly as
-upstream runs them. If git is missing, the same fallbacks are used: `diff`/`diff3`, then built-in
-renderers. Your git configuration is honoured, as upstream honours it.
+Full upstream `nbdiff` on the 1,600-cell notebook without ids: 32 s with the engine off, 1.2 s
+with it on.
 
 ## Usage
 
@@ -87,9 +146,9 @@ nbdime merge base.ipynb local.ipynb remote.ipynb
 ```
 
 Exit codes, stdout, output files and stderr messages are the same as upstream's, apart from the
-deviations listed below. The git diff and merge drivers (`git-nbdiffdriver`, `git-nbmergedriver`,
-`nbdime config-git`) are being ported. Until they land you can keep using upstream's drivers, or
-run `nbdiff` in git mode as shown above.
+deviations listed below. After `nbdime config-git --enable --global`, `git diff` and `git merge`
+use the nbdime-rs drivers (`git-nbdiffdriver`, `git-nbmergedriver`) for `.ipynb` files, and
+`git difftool -t nbdime` and `git mergetool -t nbdime` are set up as well.
 
 ## What works
 
@@ -129,11 +188,21 @@ decision, in [docs/findings.md](docs/findings.md). The ones a user might notice:
 - **Undecodable file names in a repository.** Upstream crashes on these in git mode; nbdime-rs
   prints the correct diff.
 
+## Platform status
+
+- **Linux:** exact-output parity against upstream is tested in CI (x86-64; arm64 wheels are
+  smoke-tested).
+- **macOS and Windows:** the code builds, the unit tests run, and every wheel is smoke-tested in
+  CI. Exact-output parity is not tested there. On Windows, upstream writes CRLF line ends in
+  text output and nbdime-rs writes LF, and the Jupyter config search path still uses the POSIX
+  locations (F-051 in [docs/findings.md](docs/findings.md)). Treat them as supported but not
+  parity-tested.
+
 ## What is still to come
 
 - Large differential runs and further performance work.
-- Distribution packaging. The optional `nbdime_rs` Python extension has a locally verified
-  x86-64 manylinux2014 wheel. The upstream integration is prepared in a local patch.
+- The first PyPI release. The upstream integration is prepared in a local patch and has not been
+  proposed upstream.
 - The web UI (`nbdiff-web`, `nbmerge-web`, the server and the Jupyter extensions) is out of
   scope.
 

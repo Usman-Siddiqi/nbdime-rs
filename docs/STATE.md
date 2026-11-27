@@ -15,10 +15,11 @@ in `docs/findings.md`.
 
 ## Next
 
-1. Resume Phase 3. The scale-4 runs for seeds 3, 17 and 29 were interrupted before pytest printed
-   a final result. Rerun every enabled suite for each seed and triage any failures before marking
-   Phase 3 complete. The planned random notebook suites cover at least 130,560 pairs and triples
-   over those seeds. See `docs/progress.md` for the environment and commands.
+1. Phase 3 is complete (2026-11-27). Every enabled suite ran at `PARITY_SCALE=4` with seeds 3,
+   17 and 29. Seed 29 passed 129/129. Seeds 3 and 17 showed only two harness bugs: nbformat's
+   install path was not masked in generated merges, and the delta fixture was invalid for some
+   seeds. Both are fixed in `parity/test_cli.py`, and the affected tests pass again at those seeds.
+   No engine or CLI differences were found.
 2. Phase 5 is prepared locally at upstream commit `bbf08bc`, based on nbdime v4.0.4. Use
    `docs/upstream/optional-rust-engine.patch` to reproduce it in a separate local checkout.
    The patch now logs engine errors at debug level, adds `NBDIME_ACCEL=force`, loads the engine

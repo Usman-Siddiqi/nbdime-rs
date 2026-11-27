@@ -208,3 +208,15 @@ for seed in 3 17 29; do
     bash scripts/gate.sh 2>&1 | tee "phase3-seed-$seed.log"
 done
 ```
+
+## 2026-11-27: Phase 3 complete, Phase 5 revised
+- Verified the work handed over from the other agent: the gate on main passed 129 parity tests,
+  and the parity changes only add cases.
+- Phase 3 (scale 4, seeds 3, 17 and 29) found no port differences. The two harness fixes are
+  described in STATE.md.
+- Phase 5 patch revised after review: an `EngineError` fallback is now logged at debug level,
+  `NBDIME_ACCEL=force` was added, the engine loads under a lock, and a real-extension equality
+  test was added. Upstream's non-web suite passes 6,383 tests in all three modes; the only failure
+  is the JS artifacts check, which needs the web build.
+- Next: the owner decides on upstream actions (proposal issue, fork, PR). Nothing has been done
+  upstream.

@@ -57,4 +57,13 @@ jobs:
           git config --global user.name ci && git config --global user.email ci@example.com
           # Suite names have no spaces; macOS's bash 3.2 has no mapfile.
           suites=$(grep -v '^\s*#' parity/enabled_suites.txt | sed '/^\s*$/d' | sed 's#^#parity/#')
-          python -m pytest -c parity/pytest.ini -p no:tornasync $suites
+          python -m pytest -c parity/pytest.ini -p no:tornasync --junitxml=parity-results.xml $suites
+      - name: Failed parity tests
+        if: failure()
+        shell: python
+        run: |
+          import xml.etree.ElementTree as ET
+          for case in ET.parse("parity-results.xml").iter("testcase"):
+              for bad in case.findall("failure") + case.findall("error"):
+                  first = (bad.get("message") or "").splitlines()[:1]
+                  print("%s::%s  %s" % (case.get("classname"), case.get("name"), first[0][:160] if first else ""))

@@ -1,6 +1,7 @@
 //! The command line tools run as processes: real git repositories (working trees,
 //! subdirectories, linked worktrees, bare repositories), names that are not UTF-8 and exit
 //! statuses. Every child gets a private HOME and git configuration.
+#![cfg(unix)]
 
 use std::ffi::OsStr;
 use std::fs;

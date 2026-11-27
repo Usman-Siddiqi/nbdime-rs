@@ -588,6 +588,20 @@ doubled final newline, and a common last line that is repeated after the conflic
   `-h` is in the arguments, every upstream test passes except `test_nbshow_app` (U08). The suite
   is protected, so this is for the orchestrator.
 
+### F-051: PyPI wheels and Windows/macOS builds
+
+- **Packaging**: the `nbdime-rs` wheel holds the `nbdime_rs` module and native executables for
+  every command, in `.data/scripts` (`scripts/build_wheel.py`). The sdist builds the module
+  only, because maturin cannot build extra binaries from an sdist. Installing nbdime-rs next to
+  nbdime replaces nbdime's commands of the same names. An upstream `accel` extra that depends on
+  this package would therefore change nbdime's commands. That needs a decision before the
+  upstream PR: an engine-only distribution, or no commands in the extra's dependency.
+- **Windows**: it now builds. `~` expands as `ntpath` does (`USERPROFILE`, then
+  `HOMEDRIVE`+`HOMEPATH`). `git-nbdifftool`'s `os.execvp` becomes "run git and exit with its
+  status". The terminal width comes from `COLUMNS` or defaults to 80. Parity is verified on Linux
+  only. On Windows, upstream's text output uses CRLF line ends and nbdime-rs writes LF. Treat
+  Windows as supported but not parity-tested.
+
 ## Open questions
 
 - **Q-001** (decided): deterministic ids, see F-003.

@@ -16,6 +16,7 @@ fn terminal_columns() -> usize {
     stdout_columns().unwrap_or(80)
 }
 
+#[cfg(unix)]
 #[allow(unsafe_code)]
 fn stdout_columns() -> Option<usize> {
     let mut size = libc::winsize {
@@ -27,6 +28,11 @@ fn stdout_columns() -> Option<usize> {
     // SAFETY: TIOCGWINSZ writes one `winsize` through the pointer, which is valid for the call.
     let status = unsafe { libc::ioctl(1, libc::TIOCGWINSZ, &mut size) };
     (status == 0 && size.ws_col > 0).then_some(usize::from(size.ws_col))
+}
+
+#[cfg(not(unix))]
+fn stdout_columns() -> Option<usize> {
+    None
 }
 
 fn is_word_char(c: char) -> bool {

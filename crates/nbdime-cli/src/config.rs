@@ -471,6 +471,7 @@ mod tests {
     use crate::testutil::TempDir;
     use nbdime_core::json::parse;
 
+    #[cfg(unix)]
     #[test]
     fn resolve_is_absolute_even_where_the_path_does_not_exist() {
         let dir = TempDir::new("resolve");

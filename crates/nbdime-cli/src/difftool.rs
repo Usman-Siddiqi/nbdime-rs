@@ -152,15 +152,33 @@ pub fn run(ctx: &Context, _prog: &str, args: &[String], out: &mut dyn Write) -> 
 
 /// `os.execvp('git', ['git', 'diff', before, after])`: this process becomes `git diff`. Only
 /// returns if `git` cannot be started.
+#[cfg(unix)]
 fn exec_git_diff(before: &str, after: &str) -> i32 {
     use std::os::unix::process::CommandExt;
-    let error = Command::new("git")
-        .args(["diff"])
-        .arg(osstr::to_os(before))
-        .arg(osstr::to_os(after))
-        .exec();
+    let error = git_diff(before, after).exec();
     osstr::eprint(&format!("git: {error}\n"));
     1
+}
+
+/// `os.execvp` on Windows starts the program and exits with its status.
+#[cfg(not(unix))]
+fn exec_git_diff(before: &str, after: &str) -> i32 {
+    match git_diff(before, after).status() {
+        Ok(status) => std::process::exit(status.code().unwrap_or(1)),
+        Err(error) => {
+            osstr::eprint(&format!("git: {error}\n"));
+            1
+        }
+    }
+}
+
+fn git_diff(before: &str, after: &str) -> Command {
+    let mut command = Command::new("git");
+    command
+        .args(["diff"])
+        .arg(osstr::to_os(before))
+        .arg(osstr::to_os(after));
+    command
 }
 
 #[cfg(test)]

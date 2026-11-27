@@ -343,8 +343,40 @@ fn which(program: &str) -> bool {
 /// [`which`] with the value of `PATH` given (`None` when it is not set, which leaves the
 /// platform's default).
 fn which_in(program: &str, path: Option<std::ffi::OsString>) -> bool {
-    let path = path.unwrap_or_else(|| "/bin:/usr/bin".into());
-    !path.is_empty() && env::split_paths(&path).any(|dir| is_executable(&dir.join(program)))
+    let path = path.unwrap_or_else(|| default_path().into());
+    !path.is_empty()
+        && env::split_paths(&path)
+            .any(|dir| executable_names(program).any(|name| is_executable(&dir.join(name))))
+}
+
+#[cfg(unix)]
+fn default_path() -> &'static str {
+    "/bin:/usr/bin"
+}
+
+#[cfg(not(unix))]
+fn default_path() -> &'static str {
+    ""
+}
+
+/// The names `program` may have on disk: itself, and on Windows also with each `PATHEXT`
+/// extension (`shutil.which`).
+fn executable_names(program: &str) -> impl Iterator<Item = String> + '_ {
+    let extensions: Vec<String> = if cfg!(windows) {
+        env::var("PATHEXT")
+            .unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_owned())
+            .split(';')
+            .filter(|ext| !ext.is_empty())
+            .map(str::to_owned)
+            .collect()
+    } else {
+        Vec::new()
+    };
+    std::iter::once(program.to_owned()).chain(
+        extensions
+            .into_iter()
+            .map(move |ext| program.to_owned() + &ext),
+    )
 }
 
 fn is_executable(path: &Path) -> bool {

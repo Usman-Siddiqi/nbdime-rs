@@ -657,7 +657,13 @@ mod tests {
     fn git_carriage_returns_are_normalized() {
         require("git");
         let (merged, _) = merge_render_with_git("a\r\n", "a\r\nb\r\n", "a\r\n", None).unwrap();
-        assert_eq!(merged, "a\nb\n");
+        // On Windows the inputs were written as "a\r\r\n", so one "\r" survives, as in Python.
+        let expected = if crate::textmode::TRANSLATES {
+            "a\r\nb\r\n"
+        } else {
+            "a\nb\n"
+        };
+        assert_eq!(merged, expected);
     }
 
     #[test]
@@ -679,7 +685,12 @@ mod tests {
             (String::new(), 0)
         );
         let crlf = merge_render_with_diff3("a\r\n", "a\r\nb\r\n", "a\r\n", None).unwrap();
-        assert_eq!(crlf, ("a\nb\n".into(), 0));
+        let expected = if crate::textmode::TRANSLATES {
+            "a\r\nb\r\n"
+        } else {
+            "a\nb\n"
+        };
+        assert_eq!(crlf, (expected.into(), 0));
     }
 
     #[test]
@@ -859,10 +870,13 @@ mod tests {
     #[test]
     fn plain_diff_output_is_returned_whole() {
         require("diff");
-        assert_eq!(
-            diff_render_with_diff(BEFORE, AFTER).unwrap(),
+        // The input lines end in "\r\n" on Windows, and diff's own lines do not.
+        let expected = if crate::textmode::TRANSLATES {
+            "2c2\n< b\r\n---\n> B\r\n3a4\n> d\n"
+        } else {
             "2c2\n< b\n---\n> B\n3a4\n> d\n"
-        );
+        };
+        assert_eq!(diff_render_with_diff(BEFORE, AFTER).unwrap(), expected);
     }
 
     #[test]

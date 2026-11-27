@@ -34,10 +34,12 @@ def ext(tmp_path_factory):
     env = dict(os.environ, PYO3_PYTHON=sys.executable)
     subprocess.run(["cargo", "build", "--release", "-p", "nbdime-py"], cwd=ROOT, env=env,
                    check=True)
-    lib = ROOT / "target" / "release" / ("libnbdime_rs.dylib" if sys.platform == "darwin"
-                                         else "libnbdime_rs.so")
+    built, module = {"darwin": ("libnbdime_rs.dylib", "nbdime_rs.so"),
+                     "win32": ("nbdime_rs.dll", "nbdime_rs.pyd")}.get(
+        sys.platform, ("libnbdime_rs.so", "nbdime_rs.so"))
+    lib = ROOT / "target" / "release" / built
     pkg = tmp_path_factory.mktemp("pyext")
-    shutil.copy(lib, pkg / "nbdime_rs.so")
+    shutil.copy(lib, pkg / module)
     sys.path.insert(0, str(pkg))
     import nbdime_rs
     return pkg, nbdime_rs

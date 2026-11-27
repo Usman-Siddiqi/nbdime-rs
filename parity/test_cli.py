@@ -53,8 +53,9 @@ IGNORABLE_LONG = ["--sources", "--outputs", "--attachments", "--metadata", "--id
 
 @pytest.fixture(scope="module")
 def sandbox(tmp_path_factory):
+    exe = ".exe" if os.name == "nt" else ""
     for name in ("nbdime", "nbdiff", "nbmerge"):
-        if not (OUR_BIN / name).exists():
+        if not (OUR_BIN / (name + exe)).exists():
             raise RuntimeError("binary not found: %s (cargo build --release)" % (OUR_BIN / name))
     root = tmp_path_factory.mktemp("cli")
     home = root / "home"
@@ -71,6 +72,10 @@ def sandbox(tmp_path_factory):
         "TZ": "UTC",
         "COLUMNS": "80",
     }
+    # Windows processes need these to start at all (Python's site, git, the C runtime).
+    for name in ("SYSTEMROOT", "SYSTEMDRIVE", "COMSPEC", "PATHEXT", "TEMP", "TMP", "WINDIR"):
+        if os.name == "nt" and name in os.environ:
+            env[name] = os.environ[name]
     return root, env
 
 

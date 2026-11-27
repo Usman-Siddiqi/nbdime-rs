@@ -21,7 +21,9 @@ _skipped = []
 
 @pytest.fixture(scope="session")
 def engine():
-    binary = Path(os.environ.get("NBDIME_RS_DEV", ROOT / "target" / "release" / "nbdime-rs-dev"))
+    exe = ".exe" if os.name == "nt" else ""
+    binary = Path(os.environ.get("NBDIME_RS_DEV",
+                                 ROOT / "target" / "release" / ("nbdime-rs-dev" + exe)))
     if not binary.exists():
         raise RuntimeError("engine binary not found: %s (cargo build --release -p nbdime-cli)" % binary)
     eng = Engine(binary)

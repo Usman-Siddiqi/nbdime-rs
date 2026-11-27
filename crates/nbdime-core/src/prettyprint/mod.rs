@@ -187,12 +187,20 @@ impl PrettyPrintConfig {
     }
 }
 
+/// Whether Windows opens `filename` as its NUL device.
+fn is_nul_device(filename: &str) -> bool {
+    let name = filename.rsplit(['/', '\\']).next().unwrap_or(filename);
+    name.eq_ignore_ascii_case("nul")
+}
+
 /// The modification time of `filename` as `datetime.fromtimestamp(mtime).isoformat(" ")`, or
 /// `(no timestamp)` if there is no such file.
 pub fn file_timestamp(filename: &str) -> Result<String, PrettyPrintError> {
-    let Ok(modified) = fs::metadata(crate::fsname::to_path(filename)).and_then(|m| m.modified())
-    else {
-        return Ok("(no timestamp)".into());
+    let modified = match fs::metadata(crate::fsname::to_path(filename)).and_then(|m| m.modified()) {
+        Ok(modified) => modified,
+        // Python's `os.stat` of the NUL device succeeds on Windows, with every time zero.
+        Err(_) if cfg!(windows) && is_nul_device(filename) => UNIX_EPOCH,
+        Err(_) => return Ok("(no timestamp)".into()),
     };
     // `os.path.getmtime` is the float `sec + 1e-9 * nsec`, with a fraction that counts forward.
     let (sec, nsec) = match modified.duration_since(UNIX_EPOCH) {
@@ -401,6 +409,8 @@ mod tests {
     #[test]
     fn timestamp_of_a_missing_file() {
         assert_eq!(file_timestamp("/no/such/file").unwrap(), "(no timestamp)");
+        assert!(is_nul_device("NUL") && is_nul_device(r"C:\x\nul") && is_nul_device("d/Nul"));
+        assert!(!is_nul_device("null") && !is_nul_device("nul.ipynb"));
     }
 
     #[test]
